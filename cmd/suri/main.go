@@ -21,15 +21,21 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"os"
+	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/osintph/suri/internal/config"
 	"github.com/osintph/suri/internal/crawler"
 	internalhttp "github.com/osintph/suri/internal/http"
 	"github.com/osintph/suri/internal/scope"
+	"github.com/osintph/suri/internal/store"
 )
+
+// Version is the binary version string embedded at build time.
+const Version = "0.1.0-dev"
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
@@ -65,6 +71,7 @@ func newStubCmd(name, msg string) *cobra.Command {
 func newScanCmd() *cobra.Command {
 	var (
 		scopeFile string
+		dbPath    string
 		maxDepth  int
 		maxURLs   int
 		threads   int
@@ -73,7 +80,7 @@ func newScanCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "scan --scope <file> <url>",
-		Short: "Crawl a target URL and produce a discovery inventory",
+		Short: "Crawl a target URL and persist a discovery inventory",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cfg := crawler.Config{
@@ -82,12 +89,13 @@ func newScanCmd() *cobra.Command {
 				Concurrency: threads,
 				RatePerHost: rate,
 			}
-			return runScan(cmd.Context(), scopeFile, args[0], cfg)
+			return runScan(cmd.Context(), scopeFile, args[0], dbPath, cfg)
 		},
 	}
 
 	cmd.Flags().StringVar(&scopeFile, "scope", "", "path to the TOML scope file (required)")
 	_ = cmd.MarkFlagRequired("scope")
+	cmd.Flags().StringVar(&dbPath, "db", "", "path for the findings database (default: <output_dir>/<scan-id>.db)")
 	cmd.Flags().IntVar(&maxDepth, "max-depth", 3, "maximum crawl depth")
 	cmd.Flags().IntVar(&maxURLs, "max-urls", 500, "maximum number of URLs to crawl")
 	cmd.Flags().IntVar(&threads, "threads", 10, "number of concurrent HTTP workers")
@@ -96,46 +104,100 @@ func newScanCmd() *cobra.Command {
 	return cmd
 }
 
-func runScan(ctx context.Context, scopePath, seedURL string, cfg crawler.Config) error {
+func runScan(ctx context.Context, scopePath, seedURL, dbFlag string, crawlCfg crawler.Config) error {
+	conf := config.Default()
+
 	sc, err := scope.Load(scopePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot load scope file: %v\n", err)
 		os.Exit(2)
 	}
 
-	client := internalhttp.New(sc)
-
-	// Verify the seed URL is reachable and in scope before starting the crawl.
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, seedURL, nil)
+	scopeContent, err := os.ReadFile(scopePath)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid URL %q: %v\n", seedURL, err)
-		os.Exit(1)
+		fmt.Fprintf(os.Stderr, "error: cannot read scope file: %v\n", err)
+		os.Exit(2)
 	}
-	_ = req // scope check happens inside crawler via the HTTP wrapper
 
-	cr := crawler.New(sc, client, cfg)
-
-	inv, err := cr.Crawl(ctx, []string{seedURL})
+	// Generate a scan ID and resolve the database path.
+	scanID, err := store.NewScanID()
 	if err != nil {
-		var oos *internalhttp.ErrOutOfScope
-		if errors.As(err, &oos) {
-			fmt.Fprintf(os.Stderr, "blocked: %s\n", oos.Error())
-			os.Exit(3)
-		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Count unique parameter names.
-	paramSet := make(map[string]bool)
-	for _, p := range inv.Parameters {
-		paramSet[p.Name] = true
+	resolvedDBPath := dbFlag
+	if resolvedDBPath == "" {
+		resolvedDBPath = filepath.Join(conf.OutputDir, scanID+".db")
 	}
 
-	fmt.Printf("Scan complete\n")
-	fmt.Printf("  URLs discovered:      %d\n", len(inv.URLs))
-	fmt.Printf("  Forms found:          %d\n", len(inv.Forms))
-	fmt.Printf("  Unique parameters:    %d\n", len(paramSet))
-	fmt.Printf("  JS artifacts:         %d\n", len(inv.JSArtifacts))
+	st, err := store.Open(resolvedDBPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot open database: %v\n", err)
+		os.Exit(1)
+	}
+	defer st.Close()
+
+	snapshotID, err := st.InsertScopeSnapshot(ctx, sc.EngagementName, string(scopeContent))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot store scope snapshot: %v\n", err)
+		os.Exit(1)
+	}
+
+	if err := st.InsertScan(ctx, store.ScanRecord{
+		ID:              scanID,
+		StartTime:       time.Now(),
+		ScopeFilePath:   scopePath,
+		ScopeSnapshotID: snapshotID,
+		SeedURLs:        []string{seedURL},
+		SuriVersion:     Version,
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "error: cannot record scan: %v\n", err)
+		os.Exit(1)
+	}
+
+	client := internalhttp.New(sc)
+	cr := crawler.New(sc, client, crawlCfg)
+
+	inv, err := cr.Crawl(ctx, []string{seedURL})
+	exitStatus := 0
+	if err != nil {
+		var oos *internalhttp.ErrOutOfScope
+		if errors.As(err, &oos) {
+			fmt.Fprintf(os.Stderr, "blocked: %s\n", oos.Error())
+			exitStatus = 3
+		} else {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			exitStatus = 1
+		}
+	}
+
+	if inv != nil {
+		if saveErr := st.SaveInventory(ctx, scanID, inv); saveErr != nil {
+			slog.Error("failed to persist inventory", "err", saveErr)
+		}
+	}
+
+	if finalErr := st.FinalizeScan(ctx, scanID, exitStatus); finalErr != nil {
+		slog.Error("failed to finalize scan record", "err", finalErr)
+	}
+
+	if inv != nil {
+		paramSet := make(map[string]bool)
+		for _, p := range inv.Parameters {
+			paramSet[p.Name] = true
+		}
+		fmt.Printf("Scan complete\n")
+		fmt.Printf("  URLs discovered:      %d\n", len(inv.URLs))
+		fmt.Printf("  Forms found:          %d\n", len(inv.Forms))
+		fmt.Printf("  Unique parameters:    %d\n", len(paramSet))
+		fmt.Printf("  JS artifacts:         %d\n", len(inv.JSArtifacts))
+	}
+
+	fmt.Printf("  DB: %s\n", resolvedDBPath)
+
+	if exitStatus != 0 {
+		os.Exit(exitStatus)
+	}
 	return nil
 }
