@@ -1,0 +1,23 @@
+# Operator config file for Suri.
+# Default location: $XDG_CONFIG_HOME/suri/config.toml (Linux/macOS)
+#                   %APPDATA%\suri\config.toml (Windows)
+# Override with: suri --config /path/to/config.toml ...
+#
+# All values are optional. Suri runs with built-in defaults if this file
+# does not exist.
+
+# output_dir: directory where scan databases and reports are written.
+# Default: current working directory.
+output_dir = "~/suri-output"
+
+# log_file: path to the JSON log file. Empty string disables file logging
+# (stderr text logging is always active).
+log_file = "~/suri-output/suri.log"
+
+# threads: default number of concurrent HTTP workers. Overridable per-scan
+# with --threads.
+threads = 10
+
+# rate_limit: default maximum requests per second per host. Overridable
+# per-scan with --rate.
+rate_limit = 10

@@ -1,0 +1,41 @@
+# Engagement scope file for Suri.
+# One scope file per engagement. Keep it in a secrets directory and do not
+# commit it to a shared repository alongside findings.
+#
+# engagement_name: short identifier for the engagement. Used in log output
+# and report headings.
+#
+# notes: free-form text for the operator. Not used by scan logic.
+#
+# hostnames: list of in-scope hostnames. Supports leftmost-label wildcards
+# only. "*.example.com" matches "api.example.com" but not "example.com"
+# itself and not "sub.api.example.com".
+#
+# ips: individual IP addresses that are in scope regardless of hostname.
+#
+# cidrs: CIDR ranges that are in scope. Every IP that falls within a listed
+# CIDR is treated as in scope. Useful for internal network engagements.
+#
+# ports: if empty, all ports are in scope. If non-empty, only the listed
+# ports are allowed. Note that the scan command derives the port from the
+# URL scheme (80 for http, 443 for https) unless an explicit port is given.
+
+engagement_name = "acme-vapt-2026-q1"
+notes           = "Authorized VAPT for Acme Corp Q1 2026. Contact: security@acme-test.local"
+
+hostnames = [
+  "*.acme-test.local",
+  "acme-test.local",
+]
+
+ips = [
+  "10.10.0.1",
+  "10.10.0.254",
+]
+
+cidrs = [
+  "10.10.0.0/24",
+]
+
+# Leave ports empty to allow all ports, or restrict to specific ones.
+ports = [80, 443, 8080, 8443]

@@ -1,0 +1,34 @@
+# Build artifacts
+/suri
+dist/
+*.exe
+
+# Go toolchain
+*.test
+*.out
+vendor/
+
+# Environment and secrets
+.env
+*.key
+*.pem
+secrets/
+
+# Local databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+
+# Temporary files
+/tmp/

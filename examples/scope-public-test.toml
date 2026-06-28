@@ -1,0 +1,13 @@
+# SMOKE TEST SCOPE ONLY. Do not use this as a template for real engagements.
+# This scope file allows only example.com on all ports and is used to verify
+# that scope enforcement is working end-to-end during development. It is not
+# a substitute for a properly scoped engagement file.
+
+engagement_name = "smoke-test"
+notes           = "Development smoke test only. Not for real engagements."
+
+hostnames = [
+  "example.com",
+]
+
+# No IPs, CIDRs, or port restrictions for the smoke test.
