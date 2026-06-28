@@ -27,12 +27,13 @@ import (
 
 // scopeFile is the raw unmarshaled form of the TOML scope file.
 type scopeFile struct {
-	EngagementName string   `toml:"engagement_name"`
-	Notes          string   `toml:"notes"`
-	Hostnames      []string `toml:"hostnames"`
-	IPs            []string `toml:"ips"`
-	CIDRs          []string `toml:"cidrs"`
-	Ports          []int    `toml:"ports"`
+	EngagementName     string   `toml:"engagement_name"`
+	Notes              string   `toml:"notes"`
+	Hostnames          []string `toml:"hostnames"`
+	IPs                []string `toml:"ips"`
+	CIDRs              []string `toml:"cidrs"`
+	Ports              []int    `toml:"ports"`
+	WildcardsRecursive bool     `toml:"wildcards_recursive"`
 }
 
 // Scope holds the parsed and validated engagement scope.
@@ -44,6 +45,10 @@ type Scope struct {
 	IPs            []string
 	CIDRs          []*net.IPNet
 	Ports          []int
+	// WildcardsRecursive controls how *.example.com is interpreted.
+	// When false (default), it matches exactly one label: api.example.com but
+	// not sub.api.example.com. When true, it matches any depth.
+	WildcardsRecursive bool
 }
 
 // Load parses a TOML scope file and returns a validated Scope.
@@ -59,11 +64,12 @@ func Load(path string) (*Scope, error) {
 	}
 
 	s := &Scope{
-		EngagementName: raw.EngagementName,
-		Notes:          raw.Notes,
-		Hostnames:      raw.Hostnames,
-		IPs:            raw.IPs,
-		Ports:          raw.Ports,
+		EngagementName:     raw.EngagementName,
+		Notes:              raw.Notes,
+		Hostnames:          raw.Hostnames,
+		IPs:                raw.IPs,
+		Ports:              raw.Ports,
+		WildcardsRecursive: raw.WildcardsRecursive,
 	}
 
 	for _, cidrStr := range raw.CIDRs {
@@ -110,13 +116,19 @@ func (s *Scope) hostnameAllowed(host string) bool {
 		if pattern == host {
 			return true
 		}
-		// Wildcard: *.example.com matches api.example.com but not example.com
-		// and not sub.api.example.com (leftmost label only).
 		if strings.HasPrefix(pattern, "*.") {
 			suffix := pattern[1:] // ".example.com"
 			if strings.HasSuffix(host, suffix) {
 				prefix := host[:len(host)-len(suffix)]
-				if len(prefix) > 0 && !strings.Contains(prefix, ".") {
+				if len(prefix) == 0 {
+					continue
+				}
+				if s.WildcardsRecursive {
+					// Any depth: a.b.c.example.com matches *.example.com.
+					return true
+				}
+				// Default: one label deep only.
+				if !strings.Contains(prefix, ".") {
 					return true
 				}
 			}

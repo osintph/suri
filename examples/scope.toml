@@ -39,3 +39,8 @@ cidrs = [
 
 # Leave ports empty to allow all ports, or restrict to specific ones.
 ports = [80, 443, 8080, 8443]
+
+# wildcards_recursive: when false (default), *.example.com matches only one
+# label deep (api.example.com yes, sub.api.example.com no). Set to true for
+# engagements where you own the entire subdomain tree.
+# wildcards_recursive = false

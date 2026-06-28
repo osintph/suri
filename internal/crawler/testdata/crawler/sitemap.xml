@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>BASEURL/</loc></url>
+  <url><loc>BASEURL/about</loc></url>
+  <url><loc>BASEURL/products</loc></url>
+  <url><loc>BASEURL/blog</loc></url>
+</urlset>

@@ -25,10 +25,20 @@ import (
 
 // makeScope constructs a Scope without file I/O for unit testing.
 func makeScope(hostnames, ips, cidrs []string, ports []int) *Scope {
+	return makeScopeOpts(hostnames, ips, cidrs, ports, false)
+}
+
+// makeScopeRecursive is like makeScope but sets WildcardsRecursive=true.
+func makeScopeRecursive(hostnames []string) *Scope {
+	return makeScopeOpts(hostnames, nil, nil, nil, true)
+}
+
+func makeScopeOpts(hostnames, ips, cidrs []string, ports []int, recursive bool) *Scope {
 	s := &Scope{
-		Hostnames: hostnames,
-		IPs:       ips,
-		Ports:     ports,
+		Hostnames:          hostnames,
+		IPs:                ips,
+		Ports:              ports,
+		WildcardsRecursive: recursive,
 	}
 	for _, c := range cidrs {
 		_, cidr, err := net.ParseCIDR(c)
@@ -164,6 +174,43 @@ func TestAllows(t *testing.T) {
 			name:    "IPv6 CIDR excludes out-of-range address",
 			scope:   makeScope(nil, nil, []string{"2001:db8::/32"}, nil),
 			host:    "2001:db9::1",
+			port:    443,
+			allowed: false,
+		},
+
+		// Amendment B: WildcardsRecursive mode.
+		{
+			name:    "recursive wildcard matches one level deep",
+			scope:   makeScopeRecursive([]string{"*.example.com"}),
+			host:    "api.example.com",
+			port:    443,
+			allowed: true,
+		},
+		{
+			name:    "recursive wildcard matches two levels deep",
+			scope:   makeScopeRecursive([]string{"*.example.com"}),
+			host:    "sub.api.example.com",
+			port:    443,
+			allowed: true,
+		},
+		{
+			name:    "recursive wildcard matches three levels deep",
+			scope:   makeScopeRecursive([]string{"*.example.com"}),
+			host:    "a.b.c.example.com",
+			port:    443,
+			allowed: true,
+		},
+		{
+			name:    "recursive wildcard still does not match apex",
+			scope:   makeScopeRecursive([]string{"*.example.com"}),
+			host:    "example.com",
+			port:    443,
+			allowed: false,
+		},
+		{
+			name:    "non-recursive wildcard still blocks two levels",
+			scope:   makeScope([]string{"*.example.com"}, nil, nil, nil),
+			host:    "a.b.example.com",
 			port:    443,
 			allowed: false,
 		},

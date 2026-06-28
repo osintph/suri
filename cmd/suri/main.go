@@ -26,6 +26,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/osintph/suri/internal/crawler"
 	internalhttp "github.com/osintph/suri/internal/http"
 	"github.com/osintph/suri/internal/scope"
 )
@@ -62,24 +63,40 @@ func newStubCmd(name, msg string) *cobra.Command {
 }
 
 func newScanCmd() *cobra.Command {
-	var scopeFile string
+	var (
+		scopeFile string
+		maxDepth  int
+		maxURLs   int
+		threads   int
+		rate      float64
+	)
 
 	cmd := &cobra.Command{
 		Use:   "scan --scope <file> <url>",
-		Short: "Send a scoped GET request to the target URL",
+		Short: "Crawl a target URL and produce a discovery inventory",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runScan(cmd.Context(), scopeFile, args[0])
+			cfg := crawler.Config{
+				MaxDepth:    maxDepth,
+				MaxURLs:     maxURLs,
+				Concurrency: threads,
+				RatePerHost: rate,
+			}
+			return runScan(cmd.Context(), scopeFile, args[0], cfg)
 		},
 	}
 
 	cmd.Flags().StringVar(&scopeFile, "scope", "", "path to the TOML scope file (required)")
 	_ = cmd.MarkFlagRequired("scope")
+	cmd.Flags().IntVar(&maxDepth, "max-depth", 3, "maximum crawl depth")
+	cmd.Flags().IntVar(&maxURLs, "max-urls", 500, "maximum number of URLs to crawl")
+	cmd.Flags().IntVar(&threads, "threads", 10, "number of concurrent HTTP workers")
+	cmd.Flags().Float64Var(&rate, "rate", 10, "maximum requests per second per host")
 
 	return cmd
 }
 
-func runScan(ctx context.Context, scopePath, rawURL string) error {
+func runScan(ctx context.Context, scopePath, seedURL string, cfg crawler.Config) error {
 	sc, err := scope.Load(scopePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot load scope file: %v\n", err)
@@ -88,25 +105,37 @@ func runScan(ctx context.Context, scopePath, rawURL string) error {
 
 	client := internalhttp.New(sc)
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	// Verify the seed URL is reachable and in scope before starting the crawl.
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, seedURL, nil)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: invalid URL %q: %v\n", rawURL, err)
+		fmt.Fprintf(os.Stderr, "error: invalid URL %q: %v\n", seedURL, err)
 		os.Exit(1)
 	}
+	_ = req // scope check happens inside crawler via the HTTP wrapper
 
-	resp, err := client.Do(ctx, req)
+	cr := crawler.New(sc, client, cfg)
+
+	inv, err := cr.Crawl(ctx, []string{seedURL})
 	if err != nil {
 		var oos *internalhttp.ErrOutOfScope
 		if errors.As(err, &oos) {
 			fmt.Fprintf(os.Stderr, "blocked: %s\n", oos.Error())
-			slog.Warn("request blocked", "url", rawURL, "reason", oos.Reason)
 			os.Exit(3)
 		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
 	}
-	defer resp.Body.Close()
 
-	fmt.Printf("%s %s\n", resp.Status, resp.Request.URL)
+	// Count unique parameter names.
+	paramSet := make(map[string]bool)
+	for _, p := range inv.Parameters {
+		paramSet[p.Name] = true
+	}
+
+	fmt.Printf("Scan complete\n")
+	fmt.Printf("  URLs discovered:      %d\n", len(inv.URLs))
+	fmt.Printf("  Forms found:          %d\n", len(inv.Forms))
+	fmt.Printf("  Unique parameters:    %d\n", len(paramSet))
+	fmt.Printf("  JS artifacts:         %d\n", len(inv.JSArtifacts))
 	return nil
 }

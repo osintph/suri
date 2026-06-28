@@ -1,0 +1,1 @@
+var API_BASE="/api/v1";fetch("/api/v1/users",{headers:{"Authorization":"Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"}});var S3="https://my-app-assets.s3.amazonaws.com/uploads";var AZURE="https://myapp.blob.core.windows.net/data";var GCS="https://storage.googleapis.com/my-gcs-bucket/files";fetch("/api/v1/admin/roles");var ROLE="role:admin";var PERM="permission:write";
