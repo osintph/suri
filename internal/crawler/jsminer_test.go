@@ -17,8 +17,16 @@
 package crawler
 
 import (
+	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
+	"sync"
 	"testing"
+
+	internalhttp "github.com/osintph/suri/internal/http"
 )
 
 func TestMineJSFromFixture(t *testing.T) {
@@ -70,5 +78,102 @@ func TestMineJSEmpty(t *testing.T) {
 	artifacts := MineJS("http://x.invalid/empty.js", []byte(""))
 	if len(artifacts) != 0 {
 		t.Errorf("expected 0 artifacts for empty JS, got %d", len(artifacts))
+	}
+}
+
+// TestJSURLsFeedCrawlQueue verifies that URL-like JS artifacts are resolved and
+// dispatched back into the crawl queue, while out-of-scope URLs are retained as
+// artifacts but never fetched.
+func TestJSURLsFeedCrawlQueue(t *testing.T) {
+	var (
+		srv     *httptest.Server
+		fetchMu sync.Mutex
+		fetched = make(map[string]bool)
+	)
+
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fetchMu.Lock()
+		fetched[r.URL.Path] = true
+		fetchMu.Unlock()
+
+		switch r.URL.Path {
+		case "/js-mine-page.html":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			fmt.Fprint(w, `<!DOCTYPE html><html><body>`+
+				`<script src="/js-linked.js"></script>`+
+				`</body></html>`)
+
+		case "/js-linked.js":
+			// Four URL-like patterns to exercise the dispatch wiring:
+			//   1. Absolute path   → api-path miner       → in scope → dispatched
+			//   2. Full same-host  → url-full miner        → in scope → dispatched
+			//   3. Full other-host → url-full miner        → out of scope → artifact only
+			//   4. Proto-relative  → url-proto-relative    → in scope → dispatched
+			addr := srv.Listener.Addr().String()
+			w.Header().Set("Content-Type", "application/javascript")
+			fmt.Fprintf(w,
+				`fetch("/api/v1/items"); `+
+					`fetch("http://%s/api/v1/users"); `+
+					`var ext="https://external.example.com/data"; `+
+					`var proto="//%s/api/v1/status";`,
+				addr, addr,
+			)
+
+		case "/api/v1/items", "/api/v1/users", "/api/v1/status":
+			w.WriteHeader(http.StatusOK)
+
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	sc := localhostScope()
+	client := internalhttp.New(sc)
+	cfg := Config{MaxDepth: 3, MaxURLs: 50, Concurrency: 2, RatePerHost: 1000}
+	cr := New(sc, client, cfg)
+
+	inv, err := cr.Crawl(context.Background(), []string{srv.URL + "/js-mine-page.html"})
+	if err != nil {
+		t.Fatalf("Crawl: %v", err)
+	}
+
+	// Build a set of all URLs that ended up in the crawl inventory.
+	inQueue := make(map[string]bool)
+	for _, u := range inv.URLs {
+		inQueue[u.URL] = true
+	}
+
+	// Same-host URLs must appear in the crawl queue (and therefore be fetched).
+	for _, wantPath := range []string{"/api/v1/items", "/api/v1/users", "/api/v1/status"} {
+		wantURL := srv.URL + wantPath
+		if !inQueue[wantURL] {
+			t.Errorf("same-host URL not dispatched to crawl queue: %s", wantURL)
+		}
+		fetchMu.Lock()
+		wasFetched := fetched[wantPath]
+		fetchMu.Unlock()
+		if !wasFetched {
+			t.Errorf("same-host URL was queued but never fetched: %s", wantPath)
+		}
+	}
+
+	// Out-of-scope URL must appear in JS artifacts.
+	foundArtifact := false
+	for _, a := range inv.JSArtifacts {
+		if strings.Contains(a.Value, "external.example.com") {
+			foundArtifact = true
+			break
+		}
+	}
+	if !foundArtifact {
+		t.Error("out-of-scope URL not found in JS artifacts")
+	}
+
+	// Out-of-scope URL must NOT be in the crawl queue.
+	for _, u := range inv.URLs {
+		if strings.Contains(u.URL, "external.example.com") {
+			t.Errorf("out-of-scope URL was dispatched to crawl queue: %s", u.URL)
+		}
 	}
 }

@@ -28,11 +28,26 @@ type minePattern struct {
 }
 
 // miners is the curated set of patterns applied to every JavaScript payload.
+// Order matters for readability; deduplication inside MineJS prevents the same
+// value from appearing twice even if multiple patterns match it.
 var miners = []minePattern{
 	{
 		// API-style URL paths: /api/..., /v1/..., /graphql, /rest/..., etc.
 		re:       regexp.MustCompile(`["` + "`" + `'](/(?:api|v\d+|graphql|gql|rest|admin|internal|service|auth|oauth|user|account|data|stream|endpoint)[/a-zA-Z0-9_\-\.]*)`),
 		category: "api-path",
+	},
+	{
+		// Generic full HTTP(S) URLs quoted in JS. Catches same-host endpoints,
+		// third-party CDN calls, and cloud storage URLs not matched below.
+		// The value is already absolute so no base-URL resolution is needed.
+		re:       regexp.MustCompile(`["` + "`" + `'](https?://[a-zA-Z0-9][a-zA-Z0-9\-\.]+(?::\d+)?/[^"` + "`" + `'\s<>]*)["` + "`" + `']`),
+		category: "url-full",
+	},
+	{
+		// Protocol-relative URLs: //hostname/path or //hostname:port/path.
+		// The crawl code prepends the page scheme before dispatching.
+		re:       regexp.MustCompile(`["` + "`" + `'](//[a-zA-Z0-9][a-zA-Z0-9\-\.]+(?::\d+)?/[^"` + "`" + `'\s<>]*)["` + "`" + `']`),
+		category: "url-proto-relative",
 	},
 	{
 		// AWS S3 bucket references.

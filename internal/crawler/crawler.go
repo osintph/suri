@@ -187,6 +187,11 @@ func (c *Crawler) process(ctx context.Context, rawURL string, depth int, inv *In
 		mu.Lock()
 		inv.JSArtifacts = append(inv.JSArtifacts, arts...)
 		mu.Unlock()
+		for _, a := range arts {
+			if abs := jsArtifactURL(base, a); abs != "" && c.inScope(abs) {
+				dispatch(abs, "js", depth+1)
+			}
+		}
 	case isXML(ct, path):
 		res, err := ParseSitemap(body)
 		if err != nil {
@@ -266,6 +271,11 @@ func (c *Crawler) processHTML(pageURL string, base *url.URL, depth int, data []b
 						mu.Lock()
 						inv.JSArtifacts = append(inv.JSArtifacts, arts...)
 						mu.Unlock()
+						for _, a := range arts {
+							if abs := jsArtifactURL(base, a); abs != "" && c.inScope(abs) {
+								dispatch(abs, "js", depth+1)
+							}
+						}
 					}
 				}
 			}
@@ -364,6 +374,24 @@ func attr(n *html.Node, key string) string {
 		}
 	}
 	return ""
+}
+
+// jsArtifactURL resolves an artifact value to an absolute URL when the artifact
+// type carries URL-like data. Returns empty string for non-URL types such as
+// auth-header, role, and permission. The base URL is used to resolve absolute
+// paths and protocol-relative values.
+func jsArtifactURL(base *url.URL, a *JSArtifact) string {
+	switch a.Type {
+	case "api-path", "url-proto-relative":
+		return toAbsolute(base, a.Value)
+	case "url-full", "s3", "azure-blob", "gcs":
+		if strings.HasPrefix(a.Value, "http://") || strings.HasPrefix(a.Value, "https://") {
+			return a.Value
+		}
+		return ""
+	default:
+		return ""
+	}
 }
 
 func isHTML(ct string) bool { return strings.Contains(ct, "text/html") }
