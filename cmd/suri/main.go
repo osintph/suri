@@ -240,6 +240,10 @@ func runScan(ctx context.Context, scopePath, seedURL, dbFlag, domain string, thr
 		}
 	}
 
+	// Emit a single summary of any out-of-scope blocks rather than per-request
+	// WARN lines (which are suppressed after the first occurrence per host).
+	client.LogBlockSummary()
+
 	if finalErr := st.FinalizeScan(ctx, scanID, exitStatus); finalErr != nil {
 		slog.Error("failed to finalize scan record", "err", finalErr)
 	}

@@ -128,9 +128,52 @@ func (s *Scope) CloudBucketAllowed(host string) bool {
 	return s.cloudBucketAllowed(normalize(host))
 }
 
-// HasCloudBuckets reports whether any cloud_buckets patterns are configured.
+// HasS3Authorisation reports whether the scope explicitly authorises probing
+// of AWS S3 endpoints. It checks whether any cloud_buckets pattern would
+// permit a representative S3 hostname.
+func (s *Scope) HasS3Authorisation() bool {
+	return s.anyCloudBucketAuthorised([]string{
+		"bucket.s3.amazonaws.com",
+		"bucket.s3.us-east-1.amazonaws.com",
+		"bucket.s3-accelerate.amazonaws.com",
+	})
+}
+
+// HasAzureAuthorisation reports whether the scope explicitly authorises
+// probing of Azure Blob Storage endpoints.
+func (s *Scope) HasAzureAuthorisation() bool {
+	return s.anyCloudBucketAuthorised([]string{
+		"account.blob.core.windows.net",
+	})
+}
+
+// HasGCSAuthorisation reports whether the scope explicitly authorises probing
+// of Google Cloud Storage endpoints.
+func (s *Scope) HasGCSAuthorisation() bool {
+	return s.anyCloudBucketAuthorised([]string{
+		"storage.googleapis.com",
+		"account.storage.googleapis.com",
+		"account.googleapis.com",
+	})
+}
+
+// HasCloudBuckets reports whether any recognised cloud storage provider is
+// authorised for probing.
 func (s *Scope) HasCloudBuckets() bool {
-	return len(s.CloudBuckets) > 0
+	return s.HasS3Authorisation() || s.HasAzureAuthorisation() || s.HasGCSAuthorisation()
+}
+
+// anyCloudBucketAuthorised returns true if any of the sentinel hostnames is
+// matched by a pattern in cloud_buckets.
+func (s *Scope) anyCloudBucketAuthorised(sentinels []string) bool {
+	for _, sentinel := range sentinels {
+		for _, pattern := range s.CloudBuckets {
+			if cloudBucketMatches(sentinel, normalize(pattern)) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s *Scope) cloudBucketAllowed(host string) bool {

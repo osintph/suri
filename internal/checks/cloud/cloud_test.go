@@ -28,12 +28,18 @@ import (
 	"github.com/osintph/suri/internal/scope"
 )
 
-// testScope builds a minimal scope that authorises requests to 127.0.0.1,
-// used by httptest servers in cloud check tests.
+// testScope builds a scope that authorises all three cloud providers plus
+// 127.0.0.1 (for httptest servers). Provider patterns are required so that
+// HasS3Authorisation / HasAzureAuthorisation / HasGCSAuthorisation return true.
 func testScope() *scope.Scope {
 	return &scope.Scope{
-		CloudBuckets: []string{"127.0.0.1"},
-		IPs:          []string{"127.0.0.1"},
+		CloudBuckets: []string{
+			"*.s3.amazonaws.com",
+			"*.blob.core.windows.net",
+			"storage.googleapis.com",
+			"127.0.0.1",
+		},
+		IPs: []string{"127.0.0.1"},
 	}
 }
 
@@ -108,8 +114,8 @@ func TestS3CheckNotPublic(t *testing.T) {
 	}
 }
 
-func TestS3CheckNoCloudBuckets(t *testing.T) {
-	// Scope with no cloud_buckets: check must return nil without probing.
+func TestS3CheckNotAuthorised(t *testing.T) {
+	// Scope with no S3 authorisation: check must return nil without probing.
 	sc := &scope.Scope{Hostnames: []string{"example.com"}}
 	target := &checks.Target{
 		Inventory:   &crawler.Inventory{},
@@ -124,7 +130,7 @@ func TestS3CheckNoCloudBuckets(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(findings) != 0 {
-		t.Errorf("expected no findings when cloud_buckets is empty, got %d", len(findings))
+		t.Errorf("expected no findings when S3 not authorised, got %d", len(findings))
 	}
 }
 
@@ -197,7 +203,7 @@ func TestAzureCheckPublicContainer(t *testing.T) {
 	}
 }
 
-func TestAzureCheckNoCloudBuckets(t *testing.T) {
+func TestAzureCheckNotAuthorised(t *testing.T) {
 	sc := &scope.Scope{Hostnames: []string{"example.com"}}
 	target := &checks.Target{
 		Inventory: &crawler.Inventory{},
@@ -209,7 +215,7 @@ func TestAzureCheckNoCloudBuckets(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(findings) != 0 {
-		t.Errorf("expected no findings when cloud_buckets is empty, got %d", len(findings))
+		t.Errorf("expected no findings when Azure not authorised, got %d", len(findings))
 	}
 }
 
@@ -244,7 +250,7 @@ func TestGCSCheckPublicBucket(t *testing.T) {
 	}
 }
 
-func TestGCSCheckNoCloudBuckets(t *testing.T) {
+func TestGCSCheckNotAuthorised(t *testing.T) {
 	sc := &scope.Scope{Hostnames: []string{"example.com"}}
 	target := &checks.Target{
 		Inventory: &crawler.Inventory{},
@@ -256,7 +262,7 @@ func TestGCSCheckNoCloudBuckets(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(findings) != 0 {
-		t.Errorf("expected no findings when cloud_buckets is empty, got %d", len(findings))
+		t.Errorf("expected no findings when GCS not authorised, got %d", len(findings))
 	}
 }
 
@@ -359,5 +365,45 @@ func TestGCSParseBucket(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("gcsParseBucket(%q) = %q, want %q", tc.url, got, tc.want)
 		}
+	}
+}
+
+// TestPerProviderAuthorisationSkip verifies that when only S3 is authorised in
+// the scope, Azure and GCS checks skip while S3 proceeds.
+func TestPerProviderAuthorisationSkip(t *testing.T) {
+	// Scope with only S3 patterns: Azure and GCS must skip.
+	s3OnlyScope := &scope.Scope{
+		CloudBuckets: []string{"*.s3.amazonaws.com", "127.0.0.1"},
+		IPs:          []string{"127.0.0.1"},
+	}
+
+	emptyInv := &crawler.Inventory{}
+
+	azTarget := &checks.Target{
+		Inventory:   emptyInv,
+		Scope:       s3OnlyScope,
+		HTTP:        internalhttp.New(s3OnlyScope),
+		Concurrency: 2,
+	}
+	azFindings, err := (&AzureCheck{}).Run(context.Background(), azTarget)
+	if err != nil {
+		t.Fatalf("AzureCheck.Run: %v", err)
+	}
+	if len(azFindings) != 0 {
+		t.Errorf("AzureCheck: expected 0 findings when only S3 authorised, got %d", len(azFindings))
+	}
+
+	gcsTarget := &checks.Target{
+		Inventory:   emptyInv,
+		Scope:       s3OnlyScope,
+		HTTP:        internalhttp.New(s3OnlyScope),
+		Concurrency: 2,
+	}
+	gcsFindings, err := (&GCSCheck{}).Run(context.Background(), gcsTarget)
+	if err != nil {
+		t.Fatalf("GCSCheck.Run: %v", err)
+	}
+	if len(gcsFindings) != 0 {
+		t.Errorf("GCSCheck: expected 0 findings when only S3 authorised, got %d", len(gcsFindings))
 	}
 }

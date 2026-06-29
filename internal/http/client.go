@@ -25,7 +25,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"sort"
 	"strconv"
+	"sync"
 	"time"
 
 	retryablehttp "github.com/projectdiscovery/retryablehttp-go"
@@ -66,13 +68,17 @@ func WithRetryMax(n int) Option {
 type Client struct {
 	inner *retryablehttp.Client
 	sc    *scope.Scope
+
+	// blockedMu guards blockedCounts.
+	blockedMu     sync.Mutex
+	blockedCounts map[string]int64 // host -> total block count
 }
 
 // New constructs a Client. The scope is checked before every network call.
 // Defaults: 10 s timeout, 3 retries with exponential back-off, up to 10
 // redirects with scope re-check on each target.
 func New(sc *scope.Scope, opts ...Option) *Client {
-	c := &Client{sc: sc}
+	c := &Client{sc: sc, blockedCounts: make(map[string]int64)}
 
 	options := retryablehttp.Options{
 		RetryWaitMin:    500 * time.Millisecond,
@@ -107,7 +113,7 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	}
 
 	if ok, reason := c.sc.Allows(host, port); !ok {
-		slog.Warn("out of scope request blocked", "host", host, "port", port, "reason", reason)
+		c.recordBlocked(host, port, reason)
 		return nil, &ErrOutOfScope{Host: host, Port: port, Reason: reason}
 	}
 
@@ -140,10 +146,50 @@ func (c *Client) checkRedirect(req *http.Request, via []*http.Request) error {
 		return fmt.Errorf("redirect target: %w", err)
 	}
 	if ok, reason := c.sc.Allows(host, port); !ok {
-		slog.Warn("redirect to out-of-scope target blocked", "host", host, "port", port, "reason", reason)
+		c.recordBlocked(host, port, reason)
 		return &ErrOutOfScope{Host: host, Port: port, Reason: reason}
 	}
 	return nil
+}
+
+// recordBlocked tracks out-of-scope block events. The first block for each
+// unique host is logged at WARN; subsequent blocks for the same host are
+// suppressed to DEBUG to avoid log spam during bulk cloud permutation probing.
+func (c *Client) recordBlocked(host string, port int, reason string) {
+	c.blockedMu.Lock()
+	count := c.blockedCounts[host]
+	c.blockedCounts[host] = count + 1
+	c.blockedMu.Unlock()
+
+	if count == 0 {
+		slog.Warn("out of scope request blocked", "host", host, "port", port, "reason", reason)
+	} else {
+		slog.Debug("out of scope request blocked (suppressed)", "host", host, "total", count+1)
+	}
+}
+
+// LogBlockSummary logs a summary of all out-of-scope blocks since the client
+// was created: one WARN line with total count and unique host count, followed
+// by a DEBUG line listing the hosts. It returns total block count and unique
+// host count so callers can inspect the summary without parsing log output.
+// Call this at the end of a scan to emit accumulated block statistics.
+func (c *Client) LogBlockSummary() (total int64, unique int) {
+	c.blockedMu.Lock()
+	hosts := make([]string, 0, len(c.blockedCounts))
+	for host, count := range c.blockedCounts {
+		total += count
+		unique++
+		hosts = append(hosts, host)
+	}
+	c.blockedMu.Unlock()
+
+	if unique == 0 {
+		return 0, 0
+	}
+	sort.Strings(hosts)
+	slog.Warn("out of scope blocks summarised", "count", total, "unique_hosts", unique)
+	slog.Debug("blocked hosts list", "hosts", hosts)
+	return total, unique
 }
 
 // verifyResolvedIPs resolves host and checks every returned IP against scope

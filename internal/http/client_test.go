@@ -19,9 +19,11 @@ package http
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 
 	"github.com/osintph/suri/internal/scope"
@@ -97,5 +99,75 @@ func TestErrOutOfScopeMessage(t *testing.T) {
 	msg := e.Error()
 	if msg == "" {
 		t.Error("ErrOutOfScope.Error() returned empty string")
+	}
+}
+
+// countingHandler is a slog.Handler that counts records at each level.
+type countingHandler struct {
+	mu    sync.Mutex
+	warns int
+}
+
+func (h *countingHandler) Enabled(_ context.Context, l slog.Level) bool { return true }
+func (h *countingHandler) WithAttrs(_ []slog.Attr) slog.Handler         { return h }
+func (h *countingHandler) WithGroup(_ string) slog.Handler              { return h }
+func (h *countingHandler) Handle(_ context.Context, r slog.Record) error {
+	if r.Level == slog.LevelWarn {
+		h.mu.Lock()
+		h.warns++
+		h.mu.Unlock()
+	}
+	return nil
+}
+
+func (h *countingHandler) warnCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.warns
+}
+
+func TestBlockSummaryDeduplicates(t *testing.T) {
+	counter := &countingHandler{}
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(counter))
+	defer slog.SetDefault(oldLogger)
+
+	sc := outOfScopeScope()
+	client := New(sc)
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1:9999", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+
+	// Send 100 identical out-of-scope requests.
+	for i := 0; i < 100; i++ {
+		_, _ = client.Do(context.Background(), req)
+	}
+
+	// Only the first block should have produced a WARN.
+	if got := counter.warnCount(); got != 1 {
+		t.Errorf("want 1 WARN before summary, got %d", got)
+	}
+
+	// LogBlockSummary should emit one more WARN and return correct counts.
+	total, unique := client.LogBlockSummary()
+	if total != 100 {
+		t.Errorf("total blocked: want 100, got %d", total)
+	}
+	if unique != 1 {
+		t.Errorf("unique blocked hosts: want 1, got %d", unique)
+	}
+	if got := counter.warnCount(); got != 2 {
+		t.Errorf("want 2 WARNs total (first block + summary), got %d", got)
+	}
+}
+
+func TestBlockSummaryEmpty(t *testing.T) {
+	sc := inScopeScope()
+	client := New(sc)
+	total, unique := client.LogBlockSummary()
+	if total != 0 || unique != 0 {
+		t.Errorf("empty client: want 0/0, got %d/%d", total, unique)
 	}
 }

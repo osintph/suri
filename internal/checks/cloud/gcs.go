@@ -18,6 +18,7 @@ package cloud
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -41,7 +42,9 @@ func (c *GCSCheck) Category() checks.Category { return checks.CategoryCloud }
 // from the crawl inventory; active permutation derives bucket names from the
 // engagement domain.
 func (c *GCSCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
-	if !target.Scope.HasCloudBuckets() {
+	if !target.Scope.HasGCSAuthorisation() {
+		slog.Info("cloud.gcs: gcs probing not authorised in scope, skipping",
+			"hint", "add storage.googleapis.com or *.googleapis.com to cloud_buckets in scope file")
 		return nil, nil
 	}
 

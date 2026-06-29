@@ -366,3 +366,96 @@ func TestCloudBucketMatchesEdgeCases(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderAuthorisation(t *testing.T) {
+	cases := []struct {
+		name     string
+		buckets  []string
+		wantS3   bool
+		wantAzure bool
+		wantGCS  bool
+	}{
+		{
+			name:     "s3 patterns only",
+			buckets:  []string{"*.s3.amazonaws.com", "*.s3.*.amazonaws.com"},
+			wantS3:   true,
+			wantAzure: false,
+			wantGCS:  false,
+		},
+		{
+			name:     "s3 via broad amazonaws",
+			buckets:  []string{"*.amazonaws.com"},
+			wantS3:   true,
+			wantAzure: false,
+			wantGCS:  false,
+		},
+		{
+			name:     "azure only",
+			buckets:  []string{"*.blob.core.windows.net"},
+			wantS3:   false,
+			wantAzure: true,
+			wantGCS:  false,
+		},
+		{
+			name:     "gcs exact host",
+			buckets:  []string{"storage.googleapis.com"},
+			wantS3:   false,
+			wantAzure: false,
+			wantGCS:  true,
+		},
+		{
+			name:     "gcs wildcard",
+			buckets:  []string{"*.googleapis.com"},
+			wantS3:   false,
+			wantAzure: false,
+			wantGCS:  true,
+		},
+		{
+			name:     "mixed s3 and azure",
+			buckets:  []string{"*.s3.amazonaws.com", "*.blob.core.windows.net"},
+			wantS3:   true,
+			wantAzure: true,
+			wantGCS:  false,
+		},
+		{
+			name:     "all three providers",
+			buckets:  []string{"*.s3.amazonaws.com", "*.blob.core.windows.net", "storage.googleapis.com"},
+			wantS3:   true,
+			wantAzure: true,
+			wantGCS:  true,
+		},
+		{
+			name:     "empty cloud_buckets",
+			buckets:  []string{},
+			wantS3:   false,
+			wantAzure: false,
+			wantGCS:  false,
+		},
+		{
+			name:     "127.0.0.1 only (no cloud provider)",
+			buckets:  []string{"127.0.0.1"},
+			wantS3:   false,
+			wantAzure: false,
+			wantGCS:  false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			sc := &Scope{CloudBuckets: tc.buckets}
+			if got := sc.HasS3Authorisation(); got != tc.wantS3 {
+				t.Errorf("HasS3Authorisation = %v, want %v", got, tc.wantS3)
+			}
+			if got := sc.HasAzureAuthorisation(); got != tc.wantAzure {
+				t.Errorf("HasAzureAuthorisation = %v, want %v", got, tc.wantAzure)
+			}
+			if got := sc.HasGCSAuthorisation(); got != tc.wantGCS {
+				t.Errorf("HasGCSAuthorisation = %v, want %v", got, tc.wantGCS)
+			}
+			wantAny := tc.wantS3 || tc.wantAzure || tc.wantGCS
+			if got := sc.HasCloudBuckets(); got != wantAny {
+				t.Errorf("HasCloudBuckets = %v, want %v", got, wantAny)
+			}
+		})
+	}
+}

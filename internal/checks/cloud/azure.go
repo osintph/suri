@@ -18,6 +18,7 @@ package cloud
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"strings"
 
@@ -47,7 +48,9 @@ func (c *AzureCheck) Category() checks.Category { return checks.CategoryCloud }
 // azure-blob artifacts from the crawl inventory; active permutation derives
 // account names from the engagement domain.
 func (c *AzureCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
-	if !target.Scope.HasCloudBuckets() {
+	if !target.Scope.HasAzureAuthorisation() {
+		slog.Info("cloud.azure: azure probing not authorised in scope, skipping",
+			"hint", "add *.blob.core.windows.net to cloud_buckets in scope file")
 		return nil, nil
 	}
 

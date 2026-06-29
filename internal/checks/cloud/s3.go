@@ -45,11 +45,11 @@ func (c *S3Check) Category() checks.Category { return checks.CategoryCloud }
 
 // Run probes candidate S3 buckets. It combines passive extraction from JS
 // artifacts already in the inventory with active permutation from the target
-// domain. Returns nil, nil without probing if cloud_buckets is not set.
+// domain. Returns nil, nil without probing if S3 probing is not authorised.
 func (c *S3Check) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
-	if !target.Scope.HasCloudBuckets() {
-		slog.Warn("cloud.s3: cloud_buckets not set in scope, skipping S3 probing",
-			"hint", "add cloud_buckets to scope file to enable cloud storage checks")
+	if !target.Scope.HasS3Authorisation() {
+		slog.Info("cloud.s3: s3 probing not authorised in scope, skipping",
+			"hint", "add *.s3.amazonaws.com or similar to cloud_buckets in scope file")
 		return nil, nil
 	}
 
@@ -113,7 +113,7 @@ func (c *S3AcceleratedCheck) Severity() checks.Severity { return checks.Severity
 func (c *S3AcceleratedCheck) Category() checks.Category { return checks.CategoryCloud }
 
 func (c *S3AcceleratedCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
-	if !target.Scope.HasCloudBuckets() {
+	if !target.Scope.HasS3Authorisation() {
 		return nil, nil
 	}
 	override := ""
