@@ -41,21 +41,21 @@ id = "sqli-error-single-quote"
 payload = "'"
 category = "sqli"
 confirmation_method = "error"
-expected_signal = "(?i)(you have an error in your sql syntax|warning: mysql_|syntax error at or near|unclosed quotation mark after the character string|quoted string not properly terminated|sqlite_error|sqlite3::|ora-[0-9]{4,5}|microsoft sql server|pg_query|pg_exec|\\[sqlite\\]|\\[mysql\\]|\\[pdo\\])"
+expected_signal = "(?i)(you have an error in your sql syntax|warning: mysql_|syntax error at or near|unclosed quotation mark after the character string|quoted string not properly terminated|sqlite_error|sqlite3::|ora-[0-9]{4,5}|microsoft sql server|pg_query|pg_exec|\\[sqlite\\]|\\[mysql\\]|\\[pdo\\]|unrecognized token|near \".*\": syntax error|incomplete input|no such column|no such table)"
 
 [[payloads]]
 id = "sqli-error-double-quote"
 payload = "\""
 category = "sqli"
 confirmation_method = "error"
-expected_signal = "(?i)(you have an error in your sql syntax|warning: mysql_|syntax error at or near|unclosed quotation mark after the character string|quoted string not properly terminated|sqlite_error|sqlite3::|ora-[0-9]{4,5}|microsoft sql server|pg_query|pg_exec|\\[sqlite\\]|\\[mysql\\]|\\[pdo\\])"
+expected_signal = "(?i)(you have an error in your sql syntax|warning: mysql_|syntax error at or near|unclosed quotation mark after the character string|quoted string not properly terminated|sqlite_error|sqlite3::|ora-[0-9]{4,5}|microsoft sql server|pg_query|pg_exec|\\[sqlite\\]|\\[mysql\\]|\\[pdo\\]|unrecognized token|near \".*\": syntax error|incomplete input|no such column|no such table)"
 
 [[payloads]]
 id = "sqli-error-or-true"
 payload = "1' OR '1'='1"
 category = "sqli"
 confirmation_method = "error"
-expected_signal = "(?i)(you have an error in your sql syntax|warning: mysql_|syntax error at or near|unclosed quotation mark after the character string|quoted string not properly terminated|sqlite_error|sqlite3::|ora-[0-9]{4,5}|microsoft sql server|pg_query|pg_exec|\\[sqlite\\]|\\[mysql\\]|\\[pdo\\])"
+expected_signal = "(?i)(you have an error in your sql syntax|warning: mysql_|syntax error at or near|unclosed quotation mark after the character string|quoted string not properly terminated|sqlite_error|sqlite3::|ora-[0-9]{4,5}|microsoft sql server|pg_query|pg_exec|\\[sqlite\\]|\\[mysql\\]|\\[pdo\\]|unrecognized token|near \".*\": syntax error|incomplete input|no such column|no such table)"
 
 # --- SQL injection: time-based ---
 

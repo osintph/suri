@@ -80,3 +80,43 @@ func TestCMDiCheckTimingClean(t *testing.T) {
 		t.Errorf("expected 0 CMDi findings for clean server, got %d", len(findings))
 	}
 }
+
+// TestCMDiTimingDetectsDelayOnConnectionError verifies that a timing finding is
+// emitted even when the server closes the TCP connection after the sleep delay
+// without sending a response. The old code did `if err != nil { continue }`,
+// silently discarding the elapsed measurement. The fix checks elapsed first.
+func TestCMDiTimingDetectsDelayOnConnectionError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		val := r.URL.Query().Get("host")
+		if strings.Contains(strings.ToLower(val), "sleep") {
+			time.Sleep(200 * time.Millisecond)
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				// Hijacking not available: return 500 so retryablehttp retries
+				// and total elapsed still exceeds the threshold.
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+			conn, _, _ := hj.Hijack()
+			conn.Close()
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("pong"))
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: srv.URL, Name: "host", Source: "query", InjectURL: srv.URL, Method: "GET"},
+	}
+
+	ck := &CMDiCheck{TimingThresholdMs: 50}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Error("expected CMDi finding even when connection closes after sleep delay")
+	}
+}

@@ -19,6 +19,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -81,6 +82,9 @@ func (c *CMDiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 			continue
 		}
 
+		slog.Debug("cmdi: probing parameter",
+			"url", param.InjectURL, "name", param.Name, "page_url", param.PageURL)
+
 		// Baseline (not under host lock).
 		baseReq, err := buildProbeReq(ctx, param, "baseline")
 		if err != nil {
@@ -109,19 +113,41 @@ func (c *CMDiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 				continue
 			}
 
+			lockWaitStart := time.Now()
 			hostLock.Lock()
+			if wait := time.Since(lockWaitStart); wait > 30*time.Second {
+				slog.Warn("cmdi: per-host lock blocked >30s",
+					"host", host, "waited_ms", wait.Milliseconds(), "url", param.InjectURL)
+			}
+
+			// Per-probe context is created after acquiring the lock so that lock
+			// wait time does not consume the probe deadline.
+			probeCtx, probeCancel := context.WithTimeout(ctx, baseline+threshold+5*time.Second)
 			t1 := time.Now()
-			resp, err := target.HTTP.Do(ctx, req)
+			resp, probeErr := target.HTTP.Do(probeCtx, req)
 			elapsed := time.Since(t1)
 			hostLock.Unlock()
+			probeCancel()
 
-			if err != nil {
-				continue
-			}
-			resp.Body.Close()
+			slog.Debug("cmdi: payload attempt",
+				"url", param.InjectURL, "payload_id", p.ID,
+				"baseline_ms", baseline.Milliseconds(),
+				"elapsed_ms", elapsed.Milliseconds(),
+				"threshold_ms", threshold.Milliseconds(),
+				"would_fire", elapsed >= baseline+threshold)
 
-			if elapsed < baseline+threshold {
-				continue
+			fired := elapsed >= baseline+threshold
+			if probeErr != nil {
+				// Even on error (e.g., connection closed after the injected sleep,
+				// or per-probe context expired), elapsed still reflects the delay.
+				if !fired {
+					continue
+				}
+			} else {
+				resp.Body.Close()
+				if !fired {
+					continue
+				}
 			}
 
 			confirmed[key] = true

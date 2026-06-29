@@ -190,6 +190,42 @@ func TestTimingProbesSerialisePerHost(t *testing.T) {
 	}
 }
 
+// TestSQLiErrorSQLite verifies that SQLite-specific error messages are matched
+// by the error-based payload signal regex. The patterns were added in session 6.5
+// after integration testing surfaced that the regex only covered MySQL/Postgres.
+func TestSQLiErrorSQLite(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		val := r.URL.Query().Get("id")
+		w.Header().Set("Content-Type", "text/plain")
+		if strings.Contains(val, "'") {
+			w.WriteHeader(http.StatusInternalServerError)
+			// Real SQLite error from better-sqlite3 / sqlite3 node modules.
+			w.Write([]byte(`unrecognized token: "'" at offset 15`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("user info"))
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: srv.URL, Name: "id", Source: "query", InjectURL: srv.URL, Method: "GET"},
+	}
+
+	ck := &SQLiCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Error("expected SQLi finding for SQLite error message, got 0")
+	}
+	if len(findings) > 0 && findings[0].CheckID != "web.sqli.error" {
+		t.Errorf("expected web.sqli.error, got %q", findings[0].CheckID)
+	}
+}
+
 // TestTimingProbesParallelAcrossHosts verifies that timing probes against
 // different hosts are NOT serialised: N goroutines on N distinct servers should
 // all run concurrently and finish in approximately one probe's time.
