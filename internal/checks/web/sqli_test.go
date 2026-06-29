@@ -18,9 +18,11 @@ package web
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -114,5 +116,114 @@ func TestSQLiClean(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected 0 SQLi findings for clean server, got %d", len(findings))
+	}
+}
+
+// timingSleepServer creates a test server that sleeps 100ms when any query
+// parameter value contains "sleep" (case-insensitive), and responds immediately
+// otherwise. The goroutine parameter name is read from the "param" query key so
+// multiple concurrent goroutines can each use a distinct parameter name without
+// the server needing to know it in advance.
+func timingSleepServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		for _, v := range r.URL.Query() {
+			for _, val := range v {
+				if strings.Contains(strings.ToLower(val), "sleep") {
+					time.Sleep(100 * time.Millisecond)
+					w.WriteHeader(http.StatusOK)
+					w.Write([]byte("ok"))
+					return
+				}
+			}
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+}
+
+// targetWithParam returns a checks.Target for srv with one query parameter
+// named paramName. Uses webTarget so the scope matches 127.0.0.1 correctly.
+func targetWithParam(srv *httptest.Server, paramName string) *crawler.Parameter {
+	return &crawler.Parameter{
+		Name:      paramName,
+		Source:    "query",
+		InjectURL: srv.URL,
+		Method:    "GET",
+	}
+}
+
+// TestTimingProbesSerialisePerHost verifies that concurrent timing probes
+// against the same host are serialised. With N goroutines each sleeping 100ms
+// per probe, total elapsed time must be >= (N-1)*100ms (serial), not ~100ms
+// (parallel).
+func TestTimingProbesSerialisePerHost(t *testing.T) {
+	srv := timingSleepServer(t)
+	defer srv.Close()
+
+	const N = 5
+	ck := &SQLiCheck{TimingThresholdMs: 50}
+
+	var wg sync.WaitGroup
+	start := time.Now()
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			// Each goroutine has a different parameter name to avoid the confirmed-key
+			// dedup, but all point to the same host so the lock serialises them.
+			tgt := webTarget(srv)
+			tgt.Inventory.Parameters = []*crawler.Parameter{
+				targetWithParam(srv, fmt.Sprintf("id%d", i)),
+			}
+			ck.Run(context.Background(), tgt) //nolint:errcheck
+		}(i)
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	// With serialisation: (N-1) probes wait behind the lock, so elapsed >= 4*80ms.
+	// Without: all 5 probes overlap and finish in ~100ms.
+	minExpected := time.Duration(N-1) * 80 * time.Millisecond
+	if elapsed < minExpected {
+		t.Errorf("timing probes appear to have run in parallel (elapsed %v < expected serial lower-bound %v)", elapsed, minExpected)
+	}
+}
+
+// TestTimingProbesParallelAcrossHosts verifies that timing probes against
+// different hosts are NOT serialised: N goroutines on N distinct servers should
+// all run concurrently and finish in approximately one probe's time.
+func TestTimingProbesParallelAcrossHosts(t *testing.T) {
+	const N = 5
+	srvs := make([]*httptest.Server, N)
+	for i := range srvs {
+		srvs[i] = timingSleepServer(t)
+		defer srvs[i].Close()
+	}
+
+	ck := &SQLiCheck{TimingThresholdMs: 50}
+
+	var wg sync.WaitGroup
+	start := time.Now()
+	for i := 0; i < N; i++ {
+		wg.Add(1)
+		go func(srv *httptest.Server) {
+			defer wg.Done()
+			tgt := webTarget(srv)
+			tgt.Inventory.Parameters = []*crawler.Parameter{
+				targetWithParam(srv, "id"),
+			}
+			ck.Run(context.Background(), tgt) //nolint:errcheck
+		}(srvs[i])
+	}
+	wg.Wait()
+	elapsed := time.Since(start)
+
+	// If probes run in parallel the elapsed time is approximately one sleep (100ms)
+	// plus overhead. 400ms is a generous upper-bound: if elapsed > 400ms the probes
+	// must have been serialised (5 x 100ms = 500ms) even though they target distinct hosts.
+	maxExpected := 400 * time.Millisecond
+	if elapsed > maxExpected {
+		t.Errorf("timing probes across different hosts took %v (want < %v), may not be running in parallel", elapsed, maxExpected)
 	}
 }

@@ -19,6 +19,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/osintph/suri/internal/checks"
@@ -28,10 +29,17 @@ import (
 // No output is extracted and no destructive commands are run. A sleep payload
 // is injected; if the response takes significantly longer than the baseline,
 // command injection is likely.
+//
+// Timing probes are serialised per host via hostLocks: only one sleep payload
+// is in-flight per host at a time. This prevents stacking server-side threads
+// on timing-vulnerable endpoints when multiple parameters share the same host.
 type CMDiCheck struct {
 	// TimingThresholdMs is the minimum extra response time in milliseconds that
 	// triggers a finding. Zero uses the default (4000 ms).
 	TimingThresholdMs int64
+
+	// hostLocks serialises timing probes per host. Each value is a *sync.Mutex.
+	hostLocks sync.Map
 }
 
 func (c *CMDiCheck) ID() string                { return "web.cmdi" }
@@ -44,6 +52,12 @@ func (c *CMDiCheck) threshold() time.Duration {
 		return time.Duration(c.TimingThresholdMs) * time.Millisecond
 	}
 	return 4 * time.Second
+}
+
+// getHostLock returns the per-host mutex, creating it on first call.
+func (c *CMDiCheck) getHostLock(host string) *sync.Mutex {
+	mu, _ := c.hostLocks.LoadOrStore(host, &sync.Mutex{})
+	return mu.(*sync.Mutex)
 }
 
 // Run iterates over discovered parameters and probes each with timing-based
@@ -67,7 +81,7 @@ func (c *CMDiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 			continue
 		}
 
-		// Baseline
+		// Baseline (not under host lock).
 		baseReq, err := buildProbeReq(ctx, param, "baseline")
 		if err != nil {
 			continue
@@ -80,6 +94,10 @@ func (c *CMDiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 		baseResp.Body.Close()
 		baseline := time.Since(t0)
 
+		// Serialise timing probes per host.
+		host := hostFromURL(param.InjectURL)
+		hostLock := c.getHostLock(host)
+
 		for _, p := range payloads {
 			sleepSecs := p.SleepSecs
 			if sleepSecs <= 0 {
@@ -90,13 +108,17 @@ func (c *CMDiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 			if err != nil {
 				continue
 			}
+
+			hostLock.Lock()
 			t1 := time.Now()
 			resp, err := target.HTTP.Do(ctx, req)
+			elapsed := time.Since(t1)
+			hostLock.Unlock()
+
 			if err != nil {
 				continue
 			}
 			resp.Body.Close()
-			elapsed := time.Since(t1)
 
 			if elapsed < baseline+threshold {
 				continue

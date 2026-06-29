@@ -144,18 +144,20 @@ func newWordlistsUpdateCmd() *cobra.Command {
 
 func newScanCmd() *cobra.Command {
 	var (
-		scopeFile     string
-		dbPath        string
-		domain        string
-		s3Endpoint    string
-		azureEndpoint string
-		gcsEndpoint   string
-		adminWordlist string
-		maxDepth      int
-		maxURLs       int
-		threads       int
-		rate          float64
-		includeInfo   bool
+		scopeFile       string
+		dbPath          string
+		domain          string
+		s3Endpoint      string
+		azureEndpoint   string
+		gcsEndpoint     string
+		adminWordlist   string
+		maxDepth        int
+		maxURLs         int
+		threads         int
+		rate            float64
+		includeInfo     bool
+		scanTimeout     time.Duration
+		maxBackupProbes int
 	)
 
 	cmd := &cobra.Command{
@@ -169,8 +171,13 @@ func newScanCmd() *cobra.Command {
 				Concurrency: threads,
 				RatePerHost: rate,
 			}
-			return runScan(cmd.Context(), scopeFile, args[0], dbPath, domain,
-				s3Endpoint, azureEndpoint, gcsEndpoint, adminWordlist, threads, includeInfo, cfg)
+			code := runScan(cmd.Context(), scopeFile, args[0], dbPath, domain,
+				s3Endpoint, azureEndpoint, gcsEndpoint, adminWordlist,
+				maxBackupProbes, threads, includeInfo, cfg, scanTimeout)
+			if code != 0 {
+				os.Exit(code)
+			}
+			return nil
 		},
 	}
 
@@ -187,31 +194,44 @@ func newScanCmd() *cobra.Command {
 	cmd.Flags().IntVar(&threads, "threads", 10, "number of concurrent HTTP workers")
 	cmd.Flags().Float64Var(&rate, "rate", 10, "maximum requests per second per host")
 	cmd.Flags().BoolVar(&includeInfo, "include-info", false, "include info-severity findings in the scan summary (info findings are always written to the database)")
+	cmd.Flags().DurationVar(&scanTimeout, "scan-timeout", 15*time.Minute, "hard time limit for the entire scan; scan stops cleanly when exceeded (exit status 124)")
+	cmd.Flags().IntVar(&maxBackupProbes, "max-backup-probes", 0, "maximum HTTP probes made by the backup file check (0 = default 200)")
 
 	return cmd
 }
 
+// runScan executes a full scan and returns an OS exit code:
+//
+//	0   success
+//	1   scan or crawl error
+//	2   configuration / scope file error
+//	3   seed URL out of scope
+//	124 scan stopped due to --scan-timeout
+//
+// runScan does not call os.Exit itself; callers are responsible.
 func runScan(
 	ctx context.Context,
 	scopePath, seedURL, dbFlag, domain string,
 	s3EndpointFlag, azureEndpointFlag, gcsEndpointFlag string,
 	adminWordlistFlag string,
+	maxBackupProbes int,
 	threads int,
 	includeInfo bool,
 	crawlCfg crawler.Config,
-) error {
+	scanTimeout time.Duration,
+) int {
 	conf := config.Default()
 
 	sc, err := scope.Load(scopePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot load scope file: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 
 	scopeContent, err := os.ReadFile(scopePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot read scope file: %v\n", err)
-		os.Exit(2)
+		return 2
 	}
 
 	// Resolve custom endpoints: CLI flag takes precedence over scope file value.
@@ -232,7 +252,7 @@ func runScan(
 	scanID, err := store.NewScanID()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	resolvedDBPath := dbFlag
@@ -243,14 +263,14 @@ func runScan(
 	st, err := store.Open(resolvedDBPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot open database: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 	defer st.Close()
 
 	snapshotID, err := st.InsertScopeSnapshot(ctx, sc.EngagementName, string(scopeContent))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot store scope snapshot: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
 
 	if err := st.InsertScan(ctx, store.ScanRecord{
@@ -262,21 +282,27 @@ func runScan(
 		SuriVersion:     Version,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot record scan: %v\n", err)
-		os.Exit(1)
+		return 1
 	}
+
+	// scanCtx carries the hard scan timeout. All crawl and check operations use
+	// scanCtx so they respect the timeout. Store operations use ctx (no timeout)
+	// so findings are persisted even after the scan is interrupted.
+	scanCtx, cancelScan := context.WithTimeout(ctx, scanTimeout)
+	defer cancelScan()
 
 	client := internalhttp.New(sc)
 	cr := crawler.New(sc, client, crawlCfg)
 
-	inv, err := cr.Crawl(ctx, []string{seedURL})
+	inv, crawlErr := cr.Crawl(scanCtx, []string{seedURL})
 	exitStatus := 0
-	if err != nil {
+	if crawlErr != nil {
 		var oos *internalhttp.ErrOutOfScope
-		if errors.As(err, &oos) {
+		if errors.As(crawlErr, &oos) {
 			fmt.Fprintf(os.Stderr, "blocked: %s\n", oos.Error())
 			exitStatus = 3
-		} else {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		} else if !errors.Is(crawlErr, context.Canceled) && !errors.Is(crawlErr, context.DeadlineExceeded) {
+			fmt.Fprintf(os.Stderr, "error: %v\n", crawlErr)
 			exitStatus = 1
 		}
 	}
@@ -287,7 +313,6 @@ func runScan(
 	}
 
 	// Generate a per-scan canary token shared across all injection checks.
-	// This allows findings from the same scan to be traced to a common token.
 	canary := checks.GenerateCanary()
 
 	// Build the check target. Inventory may be extended by API checks (e.g. swagger
@@ -319,12 +344,15 @@ func runScan(
 		&web.SSTICheck{},
 		&web.CMDiCheck{},
 		&web.RedirectCheck{},
-		&web.BackupsCheck{},
+		&web.BackupsCheck{MaxProbes: maxBackupProbes},
 	}
 
 	var mediumPlusFindings, infoFindings int
 	for _, ck := range allChecks {
-		findings, ckErr := ck.Run(ctx, checkTarget)
+		if scanCtx.Err() != nil {
+			break // scan timed out; no point starting new checks
+		}
+		findings, ckErr := ck.Run(scanCtx, checkTarget)
 		if ckErr != nil {
 			slog.Error("check failed", "check", ck.ID(), "err", ckErr)
 			continue
@@ -381,8 +409,18 @@ func runScan(
 	// WARN lines (which are suppressed after the first occurrence per host).
 	client.LogBlockSummary()
 
+	// Override exit status with 124 when the scan timeout fired.
+	if errors.Is(scanCtx.Err(), context.DeadlineExceeded) {
+		exitStatus = 124
+	}
+
 	if finalErr := st.FinalizeScan(ctx, scanID, exitStatus); finalErr != nil {
 		slog.Error("failed to finalize scan record", "err", finalErr)
+	}
+
+	if exitStatus == 124 {
+		fmt.Printf("scan stopped after timeout, partial results in %s\n", resolvedDBPath)
+		return exitStatus
 	}
 
 	paramSet := make(map[string]bool)
@@ -403,8 +441,5 @@ func runScan(
 	}
 	fmt.Printf("  DB: %s\n", resolvedDBPath)
 
-	if exitStatus != 0 {
-		os.Exit(exitStatus)
-	}
-	return nil
+	return exitStatus
 }

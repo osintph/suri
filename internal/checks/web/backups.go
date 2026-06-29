@@ -19,6 +19,7 @@ package web
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -32,15 +33,34 @@ import (
 // It also probes a small fixed list of application-specific backup filenames
 // that are not covered by the interesting-paths catalogue.
 //
+// Input filtering (prevents DoS on large inventories):
+//   - Only URLs with ResponseStatus in {200, 401, 403} are probed; 404s and
+//     5xx responses indicate the URL is not a real route.
+//   - URLs sharing the most-common body hash per host (the SPA catch-all shell)
+//     are skipped; probing their .bak variants is guaranteed to return the same
+//     shell anyway.
+//   - Total probes across the scan are capped at MaxProbes (default 200). A
+//     warning is logged when the cap is reached.
+//
 // This check deliberately does NOT duplicate entries in the interesting-paths
 // catalogue (Session 5.9). It only probes variants derived from inventory URLs
 // and a complementary fixed list.
-type BackupsCheck struct{}
+type BackupsCheck struct {
+	// MaxProbes is the maximum total HTTP probes per scan. 0 uses the default (200).
+	MaxProbes int
+}
 
 func (c *BackupsCheck) ID() string                { return "web.backup.file" }
 func (c *BackupsCheck) Name() string              { return "Backup File Exposure" }
 func (c *BackupsCheck) Severity() checks.Severity { return checks.SeverityMedium }
 func (c *BackupsCheck) Category() checks.Category { return checks.CategoryWeb }
+
+func (c *BackupsCheck) maxProbesOrDefault() int {
+	if c.MaxProbes > 0 {
+		return c.MaxProbes
+	}
+	return 200
+}
 
 // backupSuffixes are appended to discovered URLs to probe for backup copies.
 var backupSuffixes = []string{".bak", ".old", ".orig", ".swp"}
@@ -65,32 +85,116 @@ func (c *BackupsCheck) Run(ctx context.Context, target *checks.Target) ([]*check
 		return nil, nil
 	}
 
-	var findings []*checks.Finding
-	seen := make(map[string]bool)
+	maxProbes := c.maxProbesOrDefault()
 
-	probe := func(probeURL string) {
-		if seen[probeURL] {
-			return
+	// Build per-host SPA shell hash: the most-common body_hash for 200-status
+	// URLs on each host. URLs matching this hash are SPA catch-all responses and
+	// their .bak variants are guaranteed to return the same shell (not real files).
+	shellHashes := buildShellHashes(target.Inventory)
+
+	// Collect the candidate URLs to derive backup probes from, tracking which
+	// origins have at least one valid candidate. Fixed backup paths are only
+	// added for origins with a valid candidate to avoid probing completely
+	// unknown/unreachable targets.
+	var candidates []string
+	activeOrigins := make(map[string]struct{})
+	for _, du := range target.Inventory.URLs {
+		status := du.ResponseStatus
+		// Only probe real routes: 200, 401, 403. 0 means not fetched.
+		if status != 200 && status != 401 && status != 403 {
+			continue
 		}
-		seen[probeURL] = true
+		// Skip SPA shell responses (same content for every path).
+		if status == 200 && du.BodyHash != "" {
+			host := urlHost(du.URL)
+			if shellHashes[host] == du.BodyHash {
+				continue
+			}
+		}
+		candidates = append(candidates, du.URL)
+		origin := ""
+		if u, err := url.Parse(du.URL); err == nil && u.Scheme != "" && u.Host != "" {
+			origin = u.Scheme + "://" + u.Host
+		}
+		if origin != "" {
+			activeOrigins[origin] = struct{}{}
+		}
+	}
 
+	// Collect all probe URLs (inventory-derived + fixed list) before probing so
+	// we can apply the cap cleanly.
+	seen := make(map[string]bool)
+	var toProbe []string
+
+	for _, rawURL := range candidates {
+		if !strings.HasPrefix(rawURL, "http") {
+			continue
+		}
+		parsed, err := url.Parse(rawURL)
+		if err != nil {
+			continue
+		}
+		path := parsed.Path
+		if path == "" || strings.HasSuffix(path, "/") {
+			continue
+		}
+		for _, suffix := range backupSuffixes {
+			p2 := *parsed
+			p2.Path = path + suffix
+			p2.RawQuery = ""
+			probeURL := p2.String()
+			if !seen[probeURL] {
+				seen[probeURL] = true
+				toProbe = append(toProbe, probeURL)
+			}
+		}
+	}
+
+	// Fixed backup paths per origin, but only for origins that had at least one
+	// valid candidate URL. Probing fixed paths for origins with no valid routes
+	// defeats the DoS-prevention purpose of the status filter.
+	for origin := range activeOrigins {
+		for _, fp := range fixedBackupPaths {
+			probeURL := origin + "/" + fp
+			if !seen[probeURL] {
+				seen[probeURL] = true
+				toProbe = append(toProbe, probeURL)
+			}
+		}
+	}
+
+	// Apply the cap.
+	if len(toProbe) > maxProbes {
+		slog.Warn("backup probe cap reached, some URLs not probed",
+			"total_candidates", len(toProbe),
+			"cap", maxProbes,
+			"skipped", len(toProbe)-maxProbes,
+		)
+		toProbe = toProbe[:maxProbes]
+	}
+
+	var findings []*checks.Finding
+	for _, probeURL := range toProbe {
+		if ctx.Err() != nil {
+			break
+		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
 		if err != nil {
-			return
+			continue
 		}
 		resp, err := target.HTTP.Do(ctx, req)
 		if err != nil {
-			return
+			continue
 		}
 		body := readBody(resp.Body, 4096)
 		resp.Body.Close()
 
 		status := resp.StatusCode
 		if status == http.StatusNotFound {
-			return
+			continue
 		}
 		if status >= 300 && status < 400 {
-			return
+			continue
 		}
 
 		var severity checks.Severity
@@ -102,7 +206,7 @@ func (c *BackupsCheck) Run(ctx context.Context, target *checks.Target) ([]*check
 			severity = checks.SeverityMedium
 			confidence = checks.ConfidenceTentative
 		} else {
-			return
+			continue
 		}
 
 		findings = append(findings, &checks.Finding{
@@ -123,39 +227,50 @@ func (c *BackupsCheck) Run(ctx context.Context, target *checks.Target) ([]*check
 			},
 		})
 	}
-
-	// Probe suffixed variants of each discovered URL.
-	for _, du := range target.Inventory.URLs {
-		u := du.URL
-		// Skip non-HTTP URLs, directory-style URLs, or already-probed paths.
-		if !strings.HasPrefix(u, "http") {
-			continue
-		}
-		parsed, err := url.Parse(u)
-		if err != nil {
-			continue
-		}
-		path := parsed.Path
-		if path == "" || strings.HasSuffix(path, "/") {
-			continue
-		}
-		for _, suffix := range backupSuffixes {
-			parsed2 := *parsed
-			parsed2.Path = path + suffix
-			parsed2.RawQuery = ""
-			probe(parsed2.String())
-		}
-	}
-
-	// Probe fixed backup paths against each origin.
-	origins := originSet(target.Inventory, target.SeedURLs)
-	for origin := range origins {
-		for _, fp := range fixedBackupPaths {
-			probe(origin + "/" + fp)
-		}
-	}
-
 	return findings, nil
+}
+
+// buildShellHashes returns a map from host to the most-common body_hash among
+// 200-status URLs for that host. Only hashes appearing more than once are
+// treated as a soft-200 SPA shell.
+func buildShellHashes(inv *crawler.Inventory) map[string]string {
+	// host → (hash → count)
+	counts := make(map[string]map[string]int)
+	for _, du := range inv.URLs {
+		if du.ResponseStatus != 200 || du.BodyHash == "" {
+			continue
+		}
+		host := urlHost(du.URL)
+		if counts[host] == nil {
+			counts[host] = make(map[string]int)
+		}
+		counts[host][du.BodyHash]++
+	}
+
+	shells := make(map[string]string)
+	for host, hashCounts := range counts {
+		maxCount := 0
+		maxHash := ""
+		for hash, count := range hashCounts {
+			if count > maxCount {
+				maxCount = count
+				maxHash = hash
+			}
+		}
+		if maxCount > 1 {
+			shells[host] = maxHash
+		}
+	}
+	return shells
+}
+
+// urlHost extracts the scheme+host (no path) from a URL string.
+func urlHost(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	return u.Host
 }
 
 // originSet returns the set of unique scheme://host origins from the inventory

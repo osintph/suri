@@ -76,6 +76,45 @@ suri scan --scope scope.toml https://target.example.com
 suri scan --scope scope.toml --include-info https://target.example.com
 ```
 
+## Scanning behaviour
+
+Suri is designed to be polite by default and to avoid disrupting production systems during authorized assessments.
+
+### Scan-wide timeout
+
+Every scan has a hard wall-clock limit controlled by `--scan-timeout` (default: 15 minutes). When the timeout fires:
+
+- In-flight HTTP requests complete or expire per the per-request timeout (10 seconds).
+- No new check probes start.
+- All findings discovered before the timeout are written to the database.
+- The scan exits with status 124 and prints `scan stopped after timeout, partial results in <db>`.
+
+Adjust the timeout for large targets:
+
+```bash
+suri scan --scope scope.toml --scan-timeout 60m https://target.example.com
+```
+
+### Backup file check throttling
+
+The backup file check (`web.backup.file`) derives probe URLs from the crawler inventory. On large SPAs the inventory can hold thousands of URLs; probing each with four backup extensions would generate tens of thousands of requests.
+
+Three mitigations are applied automatically:
+
+1. **Status filter.** Only URLs that the crawler fetched with HTTP status 200, 401, or 403 are probed. 404s and 5xx responses indicate the path does not exist as a real route, so probing backup variants would be wasteful.
+
+2. **SPA shell deduplication.** The crawler records the SHA-256 of the first 32 KB of each response body. If many URLs on the same host share the same body hash (the Angular/React/Vue shell HTML), that hash is identified as the SPA catch-all and those URLs are excluded from backup probing.
+
+3. **Total probe cap.** The backup check makes at most 200 HTTP probes per scan by default. When the cap is reached a warning is logged. Override with `--max-backup-probes`:
+
+```bash
+suri scan --scope scope.toml --max-backup-probes 50 https://target.example.com
+```
+
+### Timing-based check serialisation
+
+The SQL injection and command injection checks use sleep-based timing payloads to detect blind vulnerabilities. To avoid stacking multiple concurrent sleep requests against the same host (which can exhaust server thread pools), timing probes are serialised per host: only one sleep payload is in-flight on any single host at a time. Probes against different hosts run in parallel as normal.
+
 ## Wordlists
 
 See [WORDLISTS.md](WORDLISTS.md) for attribution and licensing of embedded wordlists.

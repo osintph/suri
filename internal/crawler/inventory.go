@@ -28,9 +28,11 @@ type Inventory struct {
 // DiscoveredURL records a URL found during crawling together with where it
 // came from and the crawl depth at which it was first seen.
 type DiscoveredURL struct {
-	URL    string
-	Source string // "seed", "html", "sitemap", "robots", "js"
-	Depth  int
+	URL            string
+	Source         string // "seed", "html", "sitemap", "robots", "js"
+	Depth          int
+	ResponseStatus int    // HTTP status from the fetch; 0 means not yet fetched or fetch failed
+	BodyHash       string // hex SHA-256 of first 32 KB of response body; empty when not fetched
 }
 
 // Form holds a discovered HTML form and its fields.

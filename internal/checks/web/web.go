@@ -166,3 +166,13 @@ func excerpt(b []byte, n int) []byte {
 	}
 	return b[:n]
 }
+
+// hostFromURL extracts the host (including port) from a URL string.
+// Used by timing-based checks to key per-host serialisation locks.
+func hostFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	return u.Host
+}

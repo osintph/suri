@@ -19,6 +19,8 @@ package crawler
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io"
 	"log/slog"
 	"net/http"
@@ -83,6 +85,7 @@ func (c *Crawler) Crawl(ctx context.Context, seedURLs []string) (*Inventory, err
 	inv := &Inventory{}
 	var mu sync.Mutex
 	visited := make(map[string]bool)
+	urlReg := make(map[string]*DiscoveredURL) // rawURL → pointer for post-fetch metadata
 
 	// Queue capacity bounded by MaxURLs so goroutines spawned in dispatch
 	// complete quickly (the queue always has space up to MaxURLs).
@@ -103,11 +106,24 @@ func (c *Crawler) Crawl(ctx context.Context, seedURLs []string) (*Inventory, err
 			return
 		}
 		visited[rawURL] = true
-		inv.URLs = append(inv.URLs, &DiscoveredURL{URL: rawURL, Source: source, Depth: depth})
+		du := &DiscoveredURL{URL: rawURL, Source: source, Depth: depth}
+		inv.URLs = append(inv.URLs, du)
+		urlReg[rawURL] = du
 		mu.Unlock()
 
 		wg.Add(1)
 		go func() { queue <- urlItem{url: rawURL, source: source, depth: depth} }()
+	}
+
+	// updateMeta is called by process after a successful fetch to record the
+	// HTTP status and body hash on the DiscoveredURL created by dispatch.
+	updateMeta := func(rawURL string, status int, bodyHash string) {
+		mu.Lock()
+		if du, ok := urlReg[rawURL]; ok {
+			du.ResponseStatus = status
+			du.BodyHash = bodyHash
+		}
+		mu.Unlock()
 	}
 
 	// Fixed worker pool: workers read from queue, call process, then wg.Done().
@@ -119,7 +135,7 @@ func (c *Crawler) Crawl(ctx context.Context, seedURLs []string) (*Inventory, err
 		go func() {
 			defer workerWg.Done()
 			for item := range queue {
-				c.process(ctx, item.url, item.depth, inv, &mu, dispatch)
+				c.process(ctx, item.url, item.depth, inv, &mu, dispatch, updateMeta)
 				wg.Done()
 			}
 		}()
@@ -143,7 +159,7 @@ func (c *Crawler) Crawl(ctx context.Context, seedURLs []string) (*Inventory, err
 }
 
 // process fetches a single URL, updates the inventory, and dispatches new URLs.
-func (c *Crawler) process(ctx context.Context, rawURL string, depth int, inv *Inventory, mu *sync.Mutex, dispatch func(string, string, int)) {
+func (c *Crawler) process(ctx context.Context, rawURL string, depth int, inv *Inventory, mu *sync.Mutex, dispatch func(string, string, int), updateMeta func(string, int, string)) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -175,6 +191,9 @@ func (c *Crawler) process(ctx context.Context, rawURL string, depth int, inv *In
 	if err != nil {
 		return
 	}
+
+	// Record response status and body hash now that we have the full body.
+	updateMeta(rawURL, resp.StatusCode, computeBodyHash(body))
 
 	ct := resp.Header.Get("Content-Type")
 	path := base.Path
@@ -413,6 +432,16 @@ func isXML(ct, path string) bool {
 		strings.HasSuffix(path, ".xml")
 }
 func isRobots(path string) bool { return path == "/robots.txt" }
+
+// computeBodyHash returns the hex-encoded SHA-256 of the first 32 KB of body.
+func computeBodyHash(body []byte) string {
+	const limit = 32 * 1024
+	if len(body) > limit {
+		body = body[:limit]
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
 
 type hostRateLimiter struct {
 	mu       sync.Mutex

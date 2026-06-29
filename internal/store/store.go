@@ -183,13 +183,23 @@ func (s *Store) SaveInventory(ctx context.Context, scanID string, inv *crawler.I
 	defer tx.Rollback()
 
 	urlStmt, err := tx.PrepareContext(ctx,
-		`INSERT INTO urls_discovered (scan_id, url, source, depth) VALUES (?, ?, ?, ?)`)
+		`INSERT INTO urls_discovered (scan_id, url, source, depth, response_status, body_hash)
+		 VALUES (?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return fmt.Errorf("preparing url stmt: %w", err)
 	}
 	defer urlStmt.Close()
 	for _, u := range inv.URLs {
-		if _, err := urlStmt.ExecContext(ctx, scanID, u.URL, u.Source, u.Depth); err != nil {
+		// Store 0 response_status as NULL so it is distinguishable from HTTP 200.
+		var status interface{}
+		if u.ResponseStatus != 0 {
+			status = u.ResponseStatus
+		}
+		var bodyHash interface{}
+		if u.BodyHash != "" {
+			bodyHash = u.BodyHash
+		}
+		if _, err := urlStmt.ExecContext(ctx, scanID, u.URL, u.Source, u.Depth, status, bodyHash); err != nil {
 			return fmt.Errorf("inserting url %s: %w", u.URL, err)
 		}
 	}

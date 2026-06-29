@@ -28,7 +28,7 @@ var schemaSQL string
 
 // SchemaVersion is the version number recorded in schema_migrations after a
 // fresh database is initialised. Increment when adding new migrations.
-const SchemaVersion = 2
+const SchemaVersion = 3
 
 // applyMigrations ensures the database schema is at SchemaVersion.
 // It bootstraps the schema_migrations table unconditionally so that the
@@ -81,6 +81,28 @@ func (s *Store) applyMigrations(ctx context.Context) error {
 			time.Now().UTC().Format(time.RFC3339),
 		); err != nil {
 			return fmt.Errorf("recording migration v2: %w", err)
+		}
+		current = 2
+	}
+
+	// Version 3: add response_status and body_hash to urls_discovered.
+	// SQLite requires a separate ALTER TABLE per column.
+	if current < 3 {
+		if _, err := s.db.ExecContext(ctx,
+			`ALTER TABLE urls_discovered ADD COLUMN response_status INTEGER`,
+		); err != nil {
+			return fmt.Errorf("applying schema v3 (response_status): %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`ALTER TABLE urls_discovered ADD COLUMN body_hash TEXT`,
+		); err != nil {
+			return fmt.Errorf("applying schema v3 (body_hash): %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO schema_migrations (version, applied_at) VALUES (3, ?)`,
+			time.Now().UTC().Format(time.RFC3339),
+		); err != nil {
+			return fmt.Errorf("recording migration v3: %w", err)
 		}
 	}
 

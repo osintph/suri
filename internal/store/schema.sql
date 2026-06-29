@@ -58,12 +58,12 @@ CREATE INDEX IF NOT EXISTS idx_findings_identity_hash ON findings(identity_hash)
 CREATE INDEX IF NOT EXISTS idx_findings_severity      ON findings(severity);
 
 CREATE TABLE IF NOT EXISTS urls_discovered (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    scan_id     TEXT    NOT NULL REFERENCES scans(id),
-    url         TEXT    NOT NULL,
-    source      TEXT    NOT NULL,
-    depth       INTEGER NOT NULL,
-    created_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    scan_id         TEXT    NOT NULL REFERENCES scans(id),
+    url             TEXT    NOT NULL,
+    source          TEXT    NOT NULL,
+    depth           INTEGER NOT NULL,
+    created_at      TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ', 'now'))
 );
 CREATE INDEX IF NOT EXISTS idx_urls_scan_id ON urls_discovered(scan_id);
 
