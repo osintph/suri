@@ -39,9 +39,10 @@ import (
 
 // Standard wordlist names used by scan checks.
 const (
-	AdminCommon  = "admin-common.txt"
-	APIPaths     = "api-paths.txt"
-	SwaggerPaths = "swagger-paths.txt"
+	AdminCommon      = "admin-common.txt"
+	APIPaths         = "api-paths.txt"
+	SwaggerPaths     = "swagger-paths.txt"
+	InterestingPaths = "interesting-paths.txt"
 )
 
 // PinnedCommit is the SecLists tag or commit reference used by "wordlists update".
@@ -89,6 +90,13 @@ type ListEntry struct {
 	Count  int
 }
 
+// LoadVendored loads a wordlist exclusively from the embedded vendored tier,
+// ignoring the cache and any user-supplied path. Use this for security-critical
+// lists (e.g. InterestingPaths) that must always be the canonical vendored copy.
+func LoadVendored(name string) (*Wordlist, error) {
+	return loadEmbedded(name)
+}
+
 // Load returns the best available wordlist for name, following the tier order.
 // If userPath is non-empty, that file is loaded as tier-1 and tiers 2 and 3 are skipped.
 func Load(name, userPath string) (*Wordlist, error) {
@@ -124,7 +132,7 @@ func IsPinStale() bool {
 func ListAll() ([]ListEntry, error) {
 	var entries []ListEntry
 
-	for _, name := range []string{AdminCommon, APIPaths, SwaggerPaths} {
+	for _, name := range []string{AdminCommon, APIPaths, SwaggerPaths, InterestingPaths} {
 		wl, err := loadEmbedded(name)
 		if err != nil {
 			continue

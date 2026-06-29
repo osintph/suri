@@ -26,9 +26,9 @@ import (
 )
 
 func TestLoadEmbeddedAdminCommon(t *testing.T) {
-	wl, err := Load(AdminCommon, "")
+	wl, err := LoadVendored(AdminCommon)
 	if err != nil {
-		t.Fatalf("Load(%q): %v", AdminCommon, err)
+		t.Fatalf("LoadVendored(%q): %v", AdminCommon, err)
 	}
 	if wl.Source.Kind != "vendored" {
 		t.Errorf("Source.Kind: want vendored, got %q", wl.Source.Kind)
@@ -40,9 +40,9 @@ func TestLoadEmbeddedAdminCommon(t *testing.T) {
 }
 
 func TestLoadEmbeddedAPIPaths(t *testing.T) {
-	wl, err := Load(APIPaths, "")
+	wl, err := LoadVendored(APIPaths)
 	if err != nil {
-		t.Fatalf("Load(%q): %v", APIPaths, err)
+		t.Fatalf("LoadVendored(%q): %v", APIPaths, err)
 	}
 	if wl.Source.Kind != "vendored" {
 		t.Errorf("Source.Kind: want vendored, got %q", wl.Source.Kind)
@@ -54,9 +54,9 @@ func TestLoadEmbeddedAPIPaths(t *testing.T) {
 }
 
 func TestLoadEmbeddedSwaggerPaths(t *testing.T) {
-	wl, err := Load(SwaggerPaths, "")
+	wl, err := LoadVendored(SwaggerPaths)
 	if err != nil {
-		t.Fatalf("Load(%q): %v", SwaggerPaths, err)
+		t.Fatalf("LoadVendored(%q): %v", SwaggerPaths, err)
 	}
 	if wl.Source.Kind != "vendored" {
 		t.Errorf("Source.Kind: want vendored, got %q", wl.Source.Kind)
@@ -65,6 +65,30 @@ func TestLoadEmbeddedSwaggerPaths(t *testing.T) {
 		t.Error("expected non-empty swagger-paths wordlist")
 	}
 	t.Logf("swagger-paths.txt: %d entries", len(wl.Entries))
+}
+
+func TestLoadVendoredInterestingPaths(t *testing.T) {
+	wl, err := LoadVendored(InterestingPaths)
+	if err != nil {
+		t.Fatalf("LoadVendored(%q): %v", InterestingPaths, err)
+	}
+	if wl.Source.Kind != "vendored" {
+		t.Errorf("Source.Kind: want vendored, got %q", wl.Source.Kind)
+	}
+	if len(wl.Entries) == 0 {
+		t.Error("expected non-empty interesting-paths wordlist")
+	}
+	// Spot-check a few canonical entries.
+	entries := make(map[string]bool, len(wl.Entries))
+	for _, e := range wl.Entries {
+		entries[e] = true
+	}
+	for _, want := range []string{".git/HEAD", ".env", ".htpasswd", "robots.txt"} {
+		if !entries[want] {
+			t.Errorf("interesting-paths.txt: missing expected entry %q", want)
+		}
+	}
+	t.Logf("interesting-paths.txt: %d entries", len(wl.Entries))
 }
 
 func TestLoadUserSupplied(t *testing.T) {
@@ -135,7 +159,7 @@ func TestListAllContainsVendored(t *testing.T) {
 			names[e.Name] = true
 		}
 	}
-	for _, want := range []string{AdminCommon, APIPaths, SwaggerPaths} {
+	for _, want := range []string{AdminCommon, APIPaths, SwaggerPaths, InterestingPaths} {
 		if !names[want] {
 			t.Errorf("ListAll: missing vendored %q", want)
 		}

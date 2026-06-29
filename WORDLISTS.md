@@ -13,8 +13,11 @@ The following files are embedded in the Suri binary via `go:embed`. They are cur
 | `wordlists/embedded/admin-common.txt` | `Discovery/Web-Content/common.txt` | `2024.4` |
 | `wordlists/embedded/api-paths.txt` | `Discovery/Web-Content/directory-list-2.3-small.txt` + hand-curated REST paths | `2024.4` |
 | `wordlists/embedded/swagger-paths.txt` | Hand-curated from common application observations | n/a |
+| `wordlists/embedded/interesting-paths.txt` | Hand-curated by OSINT-PH for Suri, not derived from SecLists | n/a |
 
 The embedded lists are intentionally smaller than the full SecLists originals. Run `suri wordlists update` to download the full SecLists files to the local cache, which takes precedence over the embedded lists during scans.
+
+`interesting-paths.txt` is always loaded from the vendored copy and is never replaced by the cache or the `-w` flag. It contains paths that are inherently security-relevant when present (`.git/HEAD`, `.env`, `Dockerfile`, etc.).
 
 ## Pinned SecLists commit
 

@@ -143,17 +143,18 @@ func newWordlistsUpdateCmd() *cobra.Command {
 
 func newScanCmd() *cobra.Command {
 	var (
-		scopeFile       string
-		dbPath          string
-		domain          string
-		s3Endpoint      string
-		azureEndpoint   string
-		gcsEndpoint     string
-		adminWordlist   string
-		maxDepth        int
-		maxURLs         int
-		threads         int
-		rate            float64
+		scopeFile     string
+		dbPath        string
+		domain        string
+		s3Endpoint    string
+		azureEndpoint string
+		gcsEndpoint   string
+		adminWordlist string
+		maxDepth      int
+		maxURLs       int
+		threads       int
+		rate          float64
+		includeInfo   bool
 	)
 
 	cmd := &cobra.Command{
@@ -168,7 +169,7 @@ func newScanCmd() *cobra.Command {
 				RatePerHost: rate,
 			}
 			return runScan(cmd.Context(), scopeFile, args[0], dbPath, domain,
-				s3Endpoint, azureEndpoint, gcsEndpoint, adminWordlist, threads, cfg)
+				s3Endpoint, azureEndpoint, gcsEndpoint, adminWordlist, threads, includeInfo, cfg)
 		},
 	}
 
@@ -184,6 +185,7 @@ func newScanCmd() *cobra.Command {
 	cmd.Flags().IntVar(&maxURLs, "max-urls", 500, "maximum number of URLs to crawl")
 	cmd.Flags().IntVar(&threads, "threads", 10, "number of concurrent HTTP workers")
 	cmd.Flags().Float64Var(&rate, "rate", 10, "maximum requests per second per host")
+	cmd.Flags().BoolVar(&includeInfo, "include-info", false, "include info-severity findings in the scan summary (info findings are always written to the database)")
 
 	return cmd
 }
@@ -194,6 +196,7 @@ func runScan(
 	s3EndpointFlag, azureEndpointFlag, gcsEndpointFlag string,
 	adminWordlistFlag string,
 	threads int,
+	includeInfo bool,
 	crawlCfg crawler.Config,
 ) error {
 	conf := config.Default()
@@ -305,7 +308,7 @@ func runScan(
 		&api.GraphQLCheck{},
 	}
 
-	totalFindings := 0
+	var mediumPlusFindings, infoFindings int
 	for _, ck := range allChecks {
 		findings, ckErr := ck.Run(ctx, checkTarget)
 		if ckErr != nil {
@@ -345,7 +348,11 @@ func runScan(
 			}); fErr != nil {
 				slog.Error("failed to persist finding", "check", ck.ID(), "err", fErr)
 			} else {
-				totalFindings++
+				if f.Severity == checks.SeverityInfo {
+					infoFindings++
+				} else {
+					mediumPlusFindings++
+				}
 			}
 		}
 	}
@@ -373,7 +380,13 @@ func runScan(
 	fmt.Printf("  Forms found:          %d\n", len(inv.Forms))
 	fmt.Printf("  Unique parameters:    %d\n", len(paramSet))
 	fmt.Printf("  JS artifacts:         %d\n", len(inv.JSArtifacts))
-	fmt.Printf("  Findings:             %d\n", totalFindings)
+	if includeInfo {
+		fmt.Printf("  Findings:             %d\n", mediumPlusFindings+infoFindings)
+	} else if infoFindings > 0 {
+		fmt.Printf("  Findings:             %d (info: %d suppressed)\n", mediumPlusFindings, infoFindings)
+	} else {
+		fmt.Printf("  Findings:             %d\n", mediumPlusFindings)
+	}
 	fmt.Printf("  DB: %s\n", resolvedDBPath)
 
 	if exitStatus != 0 {
