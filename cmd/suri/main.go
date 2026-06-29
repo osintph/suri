@@ -27,6 +27,8 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/osintph/suri/internal/checks"
+	"github.com/osintph/suri/internal/checks/cloud"
 	"github.com/osintph/suri/internal/config"
 	"github.com/osintph/suri/internal/crawler"
 	internalhttp "github.com/osintph/suri/internal/http"
@@ -72,6 +74,7 @@ func newScanCmd() *cobra.Command {
 	var (
 		scopeFile string
 		dbPath    string
+		domain    string
 		maxDepth  int
 		maxURLs   int
 		threads   int
@@ -89,13 +92,14 @@ func newScanCmd() *cobra.Command {
 				Concurrency: threads,
 				RatePerHost: rate,
 			}
-			return runScan(cmd.Context(), scopeFile, args[0], dbPath, cfg)
+			return runScan(cmd.Context(), scopeFile, args[0], dbPath, domain, threads, cfg)
 		},
 	}
 
 	cmd.Flags().StringVar(&scopeFile, "scope", "", "path to the TOML scope file (required)")
 	_ = cmd.MarkFlagRequired("scope")
 	cmd.Flags().StringVar(&dbPath, "db", "", "path for the findings database (default: <output_dir>/<scan-id>.db)")
+	cmd.Flags().StringVar(&domain, "domain", "", "primary domain of the engagement (used for cloud bucket permutation)")
 	cmd.Flags().IntVar(&maxDepth, "max-depth", 3, "maximum crawl depth")
 	cmd.Flags().IntVar(&maxURLs, "max-urls", 500, "maximum number of URLs to crawl")
 	cmd.Flags().IntVar(&threads, "threads", 10, "number of concurrent HTTP workers")
@@ -104,7 +108,7 @@ func newScanCmd() *cobra.Command {
 	return cmd
 }
 
-func runScan(ctx context.Context, scopePath, seedURL, dbFlag string, crawlCfg crawler.Config) error {
+func runScan(ctx context.Context, scopePath, seedURL, dbFlag, domain string, threads int, crawlCfg crawler.Config) error {
 	conf := config.Default()
 
 	sc, err := scope.Load(scopePath)
@@ -178,6 +182,64 @@ func runScan(ctx context.Context, scopePath, seedURL, dbFlag string, crawlCfg cr
 		}
 	}
 
+	// Run registered checks. Cloud checks run only if cloud_buckets is set in
+	// the scope file; they log a warning and skip otherwise.
+	cloudChecks := []checks.Check{
+		&cloud.S3Check{},
+		&cloud.AzureCheck{},
+		&cloud.GCSCheck{},
+	}
+	checkTarget := &checks.Target{
+		Inventory:   inv,
+		Scope:       sc,
+		HTTP:        client,
+		Domain:      domain,
+		Concurrency: threads,
+	}
+	totalFindings := 0
+	for _, ck := range cloudChecks {
+		findings, ckErr := ck.Run(ctx, checkTarget)
+		if ckErr != nil {
+			slog.Error("check failed", "check", ck.ID(), "err", ckErr)
+			continue
+		}
+		for _, f := range findings {
+			var evidenceID *int64
+			if f.Evidence != nil {
+				eid, eErr := st.InsertEvidence(ctx, store.EvidenceRecord{
+					ScanID:         scanID,
+					RequestBytes:   f.Evidence.RequestBytes,
+					ResponseBytes:  f.Evidence.ResponseBytes,
+					ResponseStatus: f.Evidence.ResponseStatus,
+					ResponseTimeMs: f.Evidence.ResponseTimeMs,
+				})
+				if eErr != nil {
+					slog.Error("failed to persist evidence", "check", ck.ID(), "err", eErr)
+				} else {
+					evidenceID = &eid
+				}
+			}
+			if _, fErr := st.InsertFinding(ctx, store.FindingRecord{
+				ScanID:          scanID,
+				FirstSeenScanID: scanID,
+				CheckID:         f.CheckID,
+				Severity:        string(f.Severity),
+				Title:           f.Title,
+				Description:     f.Description,
+				URL:             f.URL,
+				Parameter:       f.Parameter,
+				CWE:             f.CWE,
+				OWASP:           f.OWASP,
+				Confidence:      string(f.Confidence),
+				EvidenceID:      evidenceID,
+			}); fErr != nil {
+				slog.Error("failed to persist finding", "check", ck.ID(), "err", fErr)
+			} else {
+				totalFindings++
+			}
+		}
+	}
+
 	if finalErr := st.FinalizeScan(ctx, scanID, exitStatus); finalErr != nil {
 		slog.Error("failed to finalize scan record", "err", finalErr)
 	}
@@ -192,6 +254,7 @@ func runScan(ctx context.Context, scopePath, seedURL, dbFlag string, crawlCfg cr
 		fmt.Printf("  Forms found:          %d\n", len(inv.Forms))
 		fmt.Printf("  Unique parameters:    %d\n", len(paramSet))
 		fmt.Printf("  JS artifacts:         %d\n", len(inv.JSArtifacts))
+		fmt.Printf("  Findings:             %d\n", totalFindings)
 	}
 
 	fmt.Printf("  DB: %s\n", resolvedDBPath)

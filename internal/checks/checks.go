@@ -14,12 +14,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with this program. If not, see <https://www.gnu.org/licenses/>.
 
-// Package checks defines the Check interface and registry. Implementations
-// are in sub-packages (web, admin, api, cloud). Full check modules come in
-// Session 4 and beyond.
+// Package checks defines the Check interface and shared types. Implementations
+// live in sub-packages: checks/cloud, checks/web, checks/api, checks/admin.
 package checks
 
-import "context"
+import (
+	"context"
+
+	"github.com/osintph/suri/internal/crawler"
+	internalhttp "github.com/osintph/suri/internal/http"
+	"github.com/osintph/suri/internal/scope"
+)
 
 // Severity classifies finding risk.
 type Severity string
@@ -32,15 +37,57 @@ const (
 	SeverityInfo     Severity = "info"
 )
 
+// Confidence describes how certain the check is that the finding is real.
+type Confidence string
+
+const (
+	ConfidenceConfirmed Confidence = "confirmed"
+	ConfidenceFirm      Confidence = "firm"
+	ConfidenceTentative Confidence = "tentative"
+)
+
 // Category groups checks by type.
 type Category string
 
 const (
-	CategoryWeb   Category = "web"
-	CategoryAdmin Category = "admin"
-	CategoryAPI   Category = "api"
 	CategoryCloud Category = "cloud"
+	CategoryWeb   Category = "web"
+	CategoryAPI   Category = "api"
+	CategoryAdmin Category = "admin"
+	CategoryRecon Category = "recon"
 )
+
+// Evidence captures the raw HTTP exchange that confirms a finding.
+type Evidence struct {
+	RequestBytes   []byte
+	ResponseBytes  []byte
+	ResponseStatus int
+	ResponseTimeMs int64
+}
+
+// Finding is a potential vulnerability or misconfiguration discovered by a check.
+type Finding struct {
+	CheckID     string
+	Severity    Severity
+	Title       string
+	Description string
+	URL         string
+	Parameter   string
+	Evidence    *Evidence
+	CWE         string
+	OWASP       string
+	Confidence  Confidence
+}
+
+// Target packages everything a Check needs to run against a single engagement.
+type Target struct {
+	Inventory   *crawler.Inventory
+	Scope       *scope.Scope
+	HTTP        *internalhttp.Client
+	Domain      string
+	Concurrency int
+	Notes       map[string]string
+}
 
 // Check is the interface every scan module implements.
 type Check interface {
@@ -49,22 +96,4 @@ type Check interface {
 	Severity() Severity
 	Category() Category
 	Run(ctx context.Context, target *Target) ([]*Finding, error)
-}
-
-// Target packages everything a Check needs to run against a single engagement
-// target. Full fields are populated starting in Session 4.
-type Target struct {
-	Domain string
-}
-
-// Finding records a single discovered issue.
-type Finding struct {
-	CheckID     string
-	Severity    Severity
-	Title       string
-	Description string
-	URL         string
-	Parameter   string
-	CWE         string
-	OWASP       string
 }

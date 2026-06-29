@@ -112,8 +112,9 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	}
 
 	// DNS rebinding prevention: if the scope has CIDRs, resolve the hostname
-	// and verify every returned IP falls within them.
-	if net.ParseIP(host) == nil && len(c.sc.CIDRs) > 0 {
+	// and verify every returned IP falls within them. Cloud bucket hosts bypass
+	// this check because they resolve to cloud-provider IPs outside the CIDRs.
+	if net.ParseIP(host) == nil && len(c.sc.CIDRs) > 0 && !c.sc.CloudBucketAllowed(host) {
 		if err := c.verifyResolvedIPs(ctx, host, port); err != nil {
 			return nil, err
 		}

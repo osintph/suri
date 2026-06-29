@@ -281,3 +281,88 @@ ports          = [80, 443]
 		t.Errorf("cidrs: want 1, got %d", len(s.CIDRs))
 	}
 }
+
+func TestCloudBucketAllowed(t *testing.T) {
+	sc := &Scope{
+		CloudBuckets: []string{
+			"*.s3.amazonaws.com",
+			"*.s3.*.amazonaws.com",
+			"*.blob.core.windows.net",
+		},
+	}
+
+	cases := []struct {
+		host string
+		want bool
+	}{
+		{"bucket.s3.amazonaws.com", true},
+		{"my-app.s3.amazonaws.com", true},
+		{"bucket.s3.us-east-1.amazonaws.com", true},
+		{"bucket.s3.eu-west-1.amazonaws.com", true},
+		{"myapp.blob.core.windows.net", true},
+		{"evil.com", false},
+		{"s3.amazonaws.com", false}, // no prefix before the wildcard
+		{"storage.googleapis.com", false},
+	}
+
+	for _, tc := range cases {
+		got := sc.CloudBucketAllowed(tc.host)
+		if got != tc.want {
+			t.Errorf("CloudBucketAllowed(%q) = %v, want %v", tc.host, got, tc.want)
+		}
+	}
+}
+
+func TestAllowsCloudBucketsBypassesHostnameAndPort(t *testing.T) {
+	sc := &Scope{
+		Hostnames:    []string{"example.com"},
+		Ports:        []int{80},
+		CloudBuckets: []string{"*.s3.amazonaws.com"},
+	}
+
+	// Cloud bucket host not in Hostnames, on port 443 which is not in Ports.
+	ok, reason := sc.Allows("bucket.s3.amazonaws.com", 443)
+	if !ok {
+		t.Errorf("expected cloud bucket to be allowed, got blocked: %s", reason)
+	}
+
+	// Regular out-of-scope host is still blocked.
+	ok2, _ := sc.Allows("other.com", 80)
+	if ok2 {
+		t.Error("out-of-scope host should still be blocked")
+	}
+}
+
+func TestHasCloudBuckets(t *testing.T) {
+	if (&Scope{}).HasCloudBuckets() {
+		t.Error("empty scope should not have cloud buckets")
+	}
+	if !(&Scope{CloudBuckets: []string{"*.s3.amazonaws.com"}}).HasCloudBuckets() {
+		t.Error("scope with cloud_buckets should return true")
+	}
+}
+
+func TestCloudBucketMatchesEdgeCases(t *testing.T) {
+	cases := []struct {
+		host    string
+		pattern string
+		want    bool
+	}{
+		// Exact match (no wildcard).
+		{"127.0.0.1", "127.0.0.1", true},
+		{"127.0.0.2", "127.0.0.1", false},
+		// Single leading wildcard.
+		{"a.b.com", "*.b.com", true},
+		{"b.com", "*.b.com", false}, // nothing before the suffix
+		// Double wildcard (regional S3 pattern).
+		{"bkt.s3.us-east-1.amazonaws.com", "*.s3.*.amazonaws.com", true},
+		{"bkt.s3.eu-west-1.amazonaws.com", "*.s3.*.amazonaws.com", true},
+		{"bkt.s3.amazonaws.com", "*.s3.*.amazonaws.com", false}, // missing middle segment
+	}
+	for _, tc := range cases {
+		got := cloudBucketMatches(tc.host, tc.pattern)
+		if got != tc.want {
+			t.Errorf("cloudBucketMatches(%q, %q) = %v, want %v", tc.host, tc.pattern, got, tc.want)
+		}
+	}
+}

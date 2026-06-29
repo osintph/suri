@@ -44,3 +44,20 @@ ports = [80, 443, 8080, 8443]
 # label deep (api.example.com yes, sub.api.example.com no). Set to true for
 # engagements where you own the entire subdomain tree.
 # wildcards_recursive = false
+
+# cloud_buckets: explicit authorisation list for cloud storage probing.
+# If this list is empty (or the field is absent), the cloud check modules
+# refuse to run and log a warning. This is a legal protection: probing
+# cloud buckets without written permission from the bucket owner is not
+# permitted. Only add patterns here after confirming written authorisation.
+#
+# Wildcards use a multi-label match: *.s3.*.amazonaws.com matches
+# bucket.s3.us-east-1.amazonaws.com. Individual IPs are also accepted
+# for private S3-compatible endpoints (e.g. MinIO on 10.10.0.5).
+#
+# cloud_buckets = [
+#   "*.s3.amazonaws.com",
+#   "*.s3.*.amazonaws.com",
+#   "*.blob.core.windows.net",
+#   "*.storage.googleapis.com",
+# ]

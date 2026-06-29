@@ -11,3 +11,7 @@ hostnames = [
 ]
 
 # No IPs, CIDRs, or port restrictions for the smoke test.
+
+# cloud_buckets must be explicitly set to enable cloud storage checks.
+# Leave empty here so the smoke test does not attempt bucket probing.
+cloud_buckets = []
