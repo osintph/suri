@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -78,6 +79,75 @@ func TestCMDiCheckTimingClean(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected 0 CMDi findings for clean server, got %d", len(findings))
+	}
+}
+
+// TestCMDiBaselineUsesOriginalValue verifies that the two baseline probes use
+// the parameter's original value from InjectURL, not a hardcoded probe string.
+// A hardcoded string like "baseline" can trigger backend processing (DNS, file
+// I/O, regex) that inflates the baseline and masks real injection delays.
+func TestCMDiBaselineUsesOriginalValue(t *testing.T) {
+	var mu sync.Mutex
+	var receivedValues []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		val := r.URL.Query().Get("host")
+		mu.Lock()
+		receivedValues = append(receivedValues, val)
+		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	injectURL := srv.URL + "?host=127.0.0.1"
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: srv.URL, Name: "host", Source: "query", InjectURL: injectURL, Method: "GET"},
+	}
+
+	ck := &CMDiCheck{TimingThresholdMs: 50}
+	ck.Run(context.Background(), target) //nolint:errcheck
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	count := 0
+	for _, v := range receivedValues {
+		if v == "127.0.0.1" {
+			count++
+		}
+	}
+	if count < 2 {
+		t.Errorf("expected at least 2 baseline probes with original value \"127.0.0.1\", got %d (values: %v)", count, receivedValues)
+	}
+}
+
+// TestCMDiSlowBaselineSkipped verifies that timing checks are skipped when the
+// baseline response time already exceeds threshold/2, indicating the backend is
+// too slow for reliable injection detection.
+func TestCMDiSlowBaselineSkipped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond) // always slow
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ok"))
+	}))
+	defer srv.Close()
+
+	// threshold=50ms, threshold/2=25ms. Both baselines ≈100ms > 25ms → skip.
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: srv.URL, Name: "host", Source: "query",
+			InjectURL: srv.URL + "?host=127.0.0.1", Method: "GET"},
+	}
+
+	ck := &CMDiCheck{TimingThresholdMs: 50}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings when baseline exceeds threshold/2, got %d", len(findings))
 	}
 }
 

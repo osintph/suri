@@ -158,6 +158,7 @@ func newScanCmd() *cobra.Command {
 		includeInfo     bool
 		scanTimeout     time.Duration
 		maxBackupProbes int
+		debug           bool
 	)
 
 	cmd := &cobra.Command{
@@ -165,6 +166,11 @@ func newScanCmd() *cobra.Command {
 		Short: "Crawl a target URL and persist a discovery inventory",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if debug {
+				slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
+					Level: slog.LevelDebug,
+				})))
+			}
 			cfg := crawler.Config{
 				MaxDepth:    maxDepth,
 				MaxURLs:     maxURLs,
@@ -196,6 +202,7 @@ func newScanCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&includeInfo, "include-info", false, "include info-severity findings in the scan summary (info findings are always written to the database)")
 	cmd.Flags().DurationVar(&scanTimeout, "scan-timeout", 15*time.Minute, "hard time limit for the entire scan; scan stops cleanly when exceeded (exit status 124)")
 	cmd.Flags().IntVar(&maxBackupProbes, "max-backup-probes", 0, "maximum HTTP probes made by the backup file check (0 = default 200)")
+	cmd.Flags().BoolVar(&debug, "debug", false, "enable debug-level logging (default: info)")
 
 	return cmd
 }

@@ -85,18 +85,51 @@ func (c *CMDiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 		slog.Debug("cmdi: probing parameter",
 			"url", param.InjectURL, "name", param.Name, "page_url", param.PageURL)
 
-		// Baseline (not under host lock).
-		baseReq, err := buildProbeReq(ctx, param, "baseline")
+		// Measure baseline response time using the parameter's original value so
+		// backend processing (DNS, DB lookup, file access, etc.) that the probe
+		// string would also trigger does not inflate the baseline. Two measurements
+		// are taken and the smaller is used to reduce single-sample noise.
+		originalVal := baselineValue(param.InjectURL, param.Name)
+		baseReq1, err := buildProbeReq(ctx, param, originalVal)
 		if err != nil {
 			continue
 		}
 		t0 := time.Now()
-		baseResp, err := target.HTTP.Do(ctx, baseReq)
+		baseResp1, err := target.HTTP.Do(ctx, baseReq1)
 		if err != nil {
 			continue
 		}
-		baseResp.Body.Close()
-		baseline := time.Since(t0)
+		baseResp1.Body.Close()
+		b1 := time.Since(t0)
+
+		time.Sleep(50 * time.Millisecond)
+
+		baseReq2, err := buildProbeReq(ctx, param, originalVal)
+		if err != nil {
+			continue
+		}
+		t0 = time.Now()
+		baseResp2, err := target.HTTP.Do(ctx, baseReq2)
+		if err != nil {
+			continue
+		}
+		baseResp2.Body.Close()
+		b2 := time.Since(t0)
+
+		baseline := b1
+		if b2 < b1 {
+			baseline = b2
+		}
+
+		// If the baseline already exceeds half the threshold the backend is too
+		// slow to reliably distinguish an injected sleep from normal latency.
+		if baseline > threshold/2 {
+			slog.Warn("cmdi: baseline exceeds threshold/2, skipping timing probes",
+				"url", param.InjectURL, "name", param.Name,
+				"baseline_ms", baseline.Milliseconds(),
+				"threshold_half_ms", (threshold / 2).Milliseconds())
+			continue
+		}
 
 		// Serialise timing probes per host.
 		host := hostFromURL(param.InjectURL)

@@ -190,6 +190,76 @@ func TestTimingProbesSerialisePerHost(t *testing.T) {
 	}
 }
 
+// TestSQLiTimingBaselineUsesOriginalValue verifies that timing baseline probes
+// use the parameter's original value from InjectURL rather than a hardcoded
+// probe string. Same rationale as TestCMDiBaselineUsesOriginalValue.
+func TestSQLiTimingBaselineUsesOriginalValue(t *testing.T) {
+	var mu sync.Mutex
+	var receivedValues []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		val := r.URL.Query().Get("id")
+		mu.Lock()
+		receivedValues = append(receivedValues, val)
+		mu.Unlock()
+		// Return safe output so error-based check does not fire, allowing the
+		// timing baseline to run.
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("safe output"))
+	}))
+	defer srv.Close()
+
+	injectURL := srv.URL + "?id=1"
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: srv.URL, Name: "id", Source: "query", InjectURL: injectURL, Method: "GET"},
+	}
+
+	ck := &SQLiCheck{TimingThresholdMs: 50}
+	ck.Run(context.Background(), target) //nolint:errcheck
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	count := 0
+	for _, v := range receivedValues {
+		if v == "1" {
+			count++
+		}
+	}
+	if count < 2 {
+		t.Errorf("expected at least 2 baseline probes with original value \"1\", got %d (values: %v)", count, receivedValues)
+	}
+}
+
+// TestSQLiSlowBaselineSkipped verifies that timing checks are skipped when the
+// baseline is too slow for reliable injection detection.
+func TestSQLiSlowBaselineSkipped(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(100 * time.Millisecond) // always slow, no SQL error strings
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("safe output"))
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: srv.URL, Name: "id", Source: "query",
+			InjectURL: srv.URL + "?id=1", Method: "GET"},
+	}
+
+	// threshold=50ms, threshold/2=25ms. Baseline≈100ms > 25ms → timing skipped.
+	// Error-based also returns no match (safe output). Expect 0 findings.
+	ck := &SQLiCheck{TimingThresholdMs: 50}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings when baseline exceeds threshold/2, got %d", len(findings))
+	}
+}
+
 // TestSQLiErrorSQLite verifies that SQLite-specific error messages are matched
 // by the error-based payload signal regex. The patterns were added in session 6.5
 // after integration testing surfaced that the regex only covered MySQL/Postgres.

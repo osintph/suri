@@ -176,3 +176,16 @@ func hostFromURL(rawURL string) string {
 	}
 	return u.Host
 }
+
+// baselineValue returns the current value of paramName from injectURL's query
+// string. This gives a realistic baseline for timing probes: the original value
+// the application was observed handling. Returns an empty string when the
+// parameter is absent or the URL cannot be parsed (e.g. POST form parameters
+// whose value lives in the request body, not the URL).
+func baselineValue(injectURL, paramName string) string {
+	u, err := url.Parse(injectURL)
+	if err != nil {
+		return ""
+	}
+	return u.Query().Get(paramName)
+}
