@@ -66,8 +66,9 @@ func WithRetryMax(n int) Option {
 
 // Client wraps retryablehttp.Client and enforces scope on every request.
 type Client struct {
-	inner *retryablehttp.Client
-	sc    *scope.Scope
+	inner         *retryablehttp.Client
+	noFollowInner *http.Client // for DoNoRedirect; same timeout, no redirect following
+	sc            *scope.Scope
 
 	// blockedMu guards blockedCounts.
 	blockedMu     sync.Mutex
@@ -100,6 +101,16 @@ func New(sc *scope.Scope, opts ...Option) *Client {
 	options.HttpClient = underlying
 
 	c.inner = retryablehttp.NewClient(options)
+
+	// A separate no-redirect client for DoNoRedirect. Scope checking still
+	// applies to the initial request; the redirect target is never followed.
+	c.noFollowInner = &http.Client{
+		Timeout: options.Timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
 	return c
 }
 
@@ -133,6 +144,28 @@ func (c *Client) Do(ctx context.Context, req *http.Request) (*http.Response, err
 	*rreq.Request = *req.WithContext(ctx)
 
 	return c.inner.Do(rreq)
+}
+
+// DoNoRedirect performs the request after scope checking but does NOT follow
+// any redirect the server sends. The caller receives the raw 3xx response
+// (including the Location header) without the client pursuing the redirect.
+// Use this for open-redirect detection where following the redirect would
+// violate scope enforcement.
+func (c *Client) DoNoRedirect(ctx context.Context, req *http.Request) (*http.Response, error) {
+	host, port, err := hostPort(req)
+	if err != nil {
+		return nil, fmt.Errorf("extracting host/port from request: %w", err)
+	}
+	if ok, reason := c.sc.Allows(host, port); !ok {
+		c.recordBlocked(host, port, reason)
+		return nil, &ErrOutOfScope{Host: host, Port: port, Reason: reason}
+	}
+	if net.ParseIP(host) == nil && len(c.sc.CIDRs) > 0 && !c.sc.CloudBucketAllowed(host) {
+		if err := c.verifyResolvedIPs(ctx, host, port); err != nil {
+			return nil, err
+		}
+	}
+	return c.noFollowInner.Do(req.WithContext(ctx))
 }
 
 // checkRedirect is the http.Client.CheckRedirect hook. It re-checks scope on

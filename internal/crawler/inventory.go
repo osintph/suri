@@ -43,9 +43,11 @@ type Form struct {
 
 // Parameter is a named input found on a page.
 type Parameter struct {
-	PageURL string
-	Name    string
-	Source  string // "query", "form", "header"
+	PageURL   string
+	Name      string
+	Source    string // "query", "form", "header"
+	InjectURL string // URL to probe when injecting payloads; may differ from PageURL
+	Method    string // HTTP method to use when probing (GET, POST, etc.)
 }
 
 // JSArtifact is a value extracted from a JavaScript file by the miner.

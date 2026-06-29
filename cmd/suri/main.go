@@ -31,6 +31,7 @@ import (
 	"github.com/osintph/suri/internal/checks/admin"
 	"github.com/osintph/suri/internal/checks/api"
 	"github.com/osintph/suri/internal/checks/cloud"
+	"github.com/osintph/suri/internal/checks/web"
 	"github.com/osintph/suri/internal/config"
 	"github.com/osintph/suri/internal/crawler"
 	internalhttp "github.com/osintph/suri/internal/http"
@@ -285,6 +286,10 @@ func runScan(
 		inv = &crawler.Inventory{}
 	}
 
+	// Generate a per-scan canary token shared across all injection checks.
+	// This allows findings from the same scan to be traced to a common token.
+	canary := checks.GenerateCanary()
+
 	// Build the check target. Inventory may be extended by API checks (e.g. swagger
 	// endpoint enumeration) before SaveInventory is called below.
 	checkTarget := &checks.Target{
@@ -294,6 +299,7 @@ func runScan(
 		Domain:      domain,
 		Concurrency: threads,
 		SeedURLs:    []string{seedURL},
+		Canary:      canary,
 	}
 
 	allChecks := []checks.Check{
@@ -306,6 +312,14 @@ func runScan(
 		// API spec and GraphQL discovery.
 		&api.SwaggerCheck{},
 		&api.GraphQLCheck{},
+		// Web injection and security header checks.
+		&web.HeadersCheck{},
+		&web.XSSCheck{},
+		&web.SQLiCheck{},
+		&web.SSTICheck{},
+		&web.CMDiCheck{},
+		&web.RedirectCheck{},
+		&web.BackupsCheck{},
 	}
 
 	var mediumPlusFindings, infoFindings int

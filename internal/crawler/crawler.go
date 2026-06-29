@@ -295,11 +295,17 @@ func collectInputs(formNode *html.Node, f *Form, pageURL string, inv *Inventory,
 			case "input", "textarea", "select":
 				if name := attr(n, "name"); name != "" {
 					f.Fields = append(f.Fields, name)
+					injectURL := f.Action
+					if injectURL == "" {
+						injectURL = pageURL
+					}
 					mu.Lock()
 					inv.Parameters = append(inv.Parameters, &Parameter{
-						PageURL: pageURL,
-						Name:    name,
-						Source:  "form",
+						PageURL:   pageURL,
+						Name:      name,
+						Source:    "form",
+						InjectURL: injectURL,
+						Method:    f.Method,
 					})
 					mu.Unlock()
 				}
@@ -320,9 +326,11 @@ func extractQueryParams(pageURL, targetURL string, inv *Inventory, mu *sync.Mute
 	for name := range u.Query() {
 		mu.Lock()
 		inv.Parameters = append(inv.Parameters, &Parameter{
-			PageURL: pageURL,
-			Name:    name,
-			Source:  "query",
+			PageURL:   pageURL,
+			Name:      name,
+			Source:    "query",
+			InjectURL: targetURL,
+			Method:    "GET",
 		})
 		mu.Unlock()
 	}

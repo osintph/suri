@@ -20,11 +20,26 @@ package checks
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 
 	"github.com/osintph/suri/internal/crawler"
 	internalhttp "github.com/osintph/suri/internal/http"
 	"github.com/osintph/suri/internal/scope"
 )
+
+// GenerateCanary returns a random 8-character lowercase hex token. Each scan
+// should generate one canary shared across all injection checks so that
+// findings from the same scan share a traceable token.
+func GenerateCanary() string {
+	b := make([]byte, 4)
+	if _, err := rand.Read(b); err != nil {
+		// Extremely unlikely; fall back to a fixed string that is still unique
+		// enough for a single scan session.
+		return "deadbeef"
+	}
+	return hex.EncodeToString(b)
+}
 
 // Severity classifies finding risk.
 type Severity string
@@ -89,6 +104,7 @@ type Target struct {
 	Concurrency int
 	Notes       map[string]string
 	SeedURLs    []string // base URLs for admin/API path probing
+	Canary      string   // 8-char hex token shared across all injection checks in a scan
 }
 
 // Check is the interface every scan module implements.
