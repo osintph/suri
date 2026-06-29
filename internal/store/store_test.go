@@ -77,7 +77,7 @@ func TestOpenIdempotent(t *testing.T) {
 
 	var ver int
 	if err := s2.db.QueryRowContext(context.Background(),
-		`SELECT version FROM schema_migrations`).Scan(&ver); err != nil {
+		`SELECT MAX(version) FROM schema_migrations`).Scan(&ver); err != nil {
 		t.Fatalf("reading version: %v", err)
 	}
 	if ver != SchemaVersion {

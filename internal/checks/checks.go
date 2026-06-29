@@ -67,16 +67,17 @@ type Evidence struct {
 
 // Finding is a potential vulnerability or misconfiguration discovered by a check.
 type Finding struct {
-	CheckID     string
-	Severity    Severity
-	Title       string
-	Description string
-	URL         string
-	Parameter   string
-	Evidence    *Evidence
-	CWE         string
-	OWASP       string
-	Confidence  Confidence
+	CheckID        string
+	Severity       Severity
+	Title          string
+	Description    string
+	URL            string
+	Parameter      string
+	Evidence       *Evidence
+	CWE            string
+	OWASP          string
+	Confidence     Confidence
+	WordlistSource string // non-empty when the finding came from a wordlist probe
 }
 
 // Target packages everything a Check needs to run against a single engagement.
@@ -87,6 +88,7 @@ type Target struct {
 	Domain      string
 	Concurrency int
 	Notes       map[string]string
+	SeedURLs    []string // base URLs for admin/API path probing
 }
 
 // Check is the interface every scan module implements.

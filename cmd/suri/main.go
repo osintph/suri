@@ -28,12 +28,15 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/osintph/suri/internal/checks"
+	"github.com/osintph/suri/internal/checks/admin"
+	"github.com/osintph/suri/internal/checks/api"
 	"github.com/osintph/suri/internal/checks/cloud"
 	"github.com/osintph/suri/internal/config"
 	"github.com/osintph/suri/internal/crawler"
 	internalhttp "github.com/osintph/suri/internal/http"
 	"github.com/osintph/suri/internal/scope"
 	"github.com/osintph/suri/internal/store"
+	"github.com/osintph/suri/internal/wordlists"
 )
 
 // Version is the binary version string embedded at build time.
@@ -52,7 +55,7 @@ func main() {
 		newScanCmd(),
 		newStubCmd("report", "Report generation is not yet implemented."),
 		newStubCmd("diff", "Diff engine is not yet implemented."),
-		newStubCmd("wordlists", "Wordlist management is not yet implemented."),
+		newWordlistsCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
@@ -70,18 +73,87 @@ func newStubCmd(name, msg string) *cobra.Command {
 	}
 }
 
+func newWordlistsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "wordlists",
+		Short: "Manage wordlists used for path and API probing",
+	}
+	cmd.AddCommand(newWordlistsListCmd(), newWordlistsUpdateCmd())
+	return cmd
+}
+
+func newWordlistsListCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "list",
+		Short: "List available wordlists and their entry counts",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			entries, err := wordlists.ListAll()
+			if err != nil {
+				return fmt.Errorf("listing wordlists: %w", err)
+			}
+
+			vendored := make([]wordlists.ListEntry, 0)
+			cached := make([]wordlists.ListEntry, 0)
+			for _, e := range entries {
+				switch e.Source.Kind {
+				case "vendored":
+					vendored = append(vendored, e)
+				case "cached":
+					cached = append(cached, e)
+				}
+			}
+
+			fmt.Printf("Vendored (embedded in binary):\n")
+			if len(vendored) == 0 {
+				fmt.Printf("  (none)\n")
+			}
+			for _, e := range vendored {
+				fmt.Printf("  %-28s %5d entries\n", e.Name, e.Count)
+			}
+
+			cacheDir, _ := wordlists.CacheDir()
+			fmt.Printf("\nCached (%s):\n", cacheDir)
+			if len(cached) == 0 {
+				fmt.Printf("  (no cached wordlists - run \"suri wordlists update\" to download)\n")
+			}
+			for _, e := range cached {
+				fmt.Printf("  %-28s %5d entries\n", e.Name, e.Count)
+			}
+			return nil
+		},
+	}
+}
+
+func newWordlistsUpdateCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "update",
+		Short: "Download SecLists wordlists at the pinned commit to the local cache",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			fmt.Printf("Downloading SecLists %s to cache...\n", wordlists.PinnedCommit)
+			if err := wordlists.Update(cmd.Context()); err != nil {
+				fmt.Fprintf(os.Stderr, "warning: one or more downloads failed: %v\n", err)
+				fmt.Fprintf(os.Stderr, "Run \"suri wordlists list\" to see what was cached successfully.\n")
+				return nil
+			}
+			fmt.Printf("Update complete.\n")
+			return nil
+		},
+	}
+}
+
 func newScanCmd() *cobra.Command {
 	var (
-		scopeFile     string
-		dbPath        string
-		domain        string
-		s3Endpoint    string
-		azureEndpoint string
-		gcsEndpoint   string
-		maxDepth      int
-		maxURLs       int
-		threads       int
-		rate          float64
+		scopeFile       string
+		dbPath          string
+		domain          string
+		s3Endpoint      string
+		azureEndpoint   string
+		gcsEndpoint     string
+		adminWordlist   string
+		maxDepth        int
+		maxURLs         int
+		threads         int
+		rate            float64
 	)
 
 	cmd := &cobra.Command{
@@ -96,7 +168,7 @@ func newScanCmd() *cobra.Command {
 				RatePerHost: rate,
 			}
 			return runScan(cmd.Context(), scopeFile, args[0], dbPath, domain,
-				s3Endpoint, azureEndpoint, gcsEndpoint, threads, cfg)
+				s3Endpoint, azureEndpoint, gcsEndpoint, adminWordlist, threads, cfg)
 		},
 	}
 
@@ -107,6 +179,7 @@ func newScanCmd() *cobra.Command {
 	cmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "custom S3-compatible endpoint URL, e.g. http://localhost:9000 for Minio (overrides s3_endpoint in scope file)")
 	cmd.Flags().StringVar(&azureEndpoint, "azure-endpoint", "", "custom Azure Blob-compatible endpoint URL (overrides azure_endpoint in scope file)")
 	cmd.Flags().StringVar(&gcsEndpoint, "gcs-endpoint", "", "custom GCS-compatible endpoint URL (overrides gcs_endpoint in scope file)")
+	cmd.Flags().StringVarP(&adminWordlist, "wordlist", "w", "", "path to a custom admin path wordlist (overrides embedded list)")
 	cmd.Flags().IntVar(&maxDepth, "max-depth", 3, "maximum crawl depth")
 	cmd.Flags().IntVar(&maxURLs, "max-urls", 500, "maximum number of URLs to crawl")
 	cmd.Flags().IntVar(&threads, "threads", 10, "number of concurrent HTTP workers")
@@ -119,6 +192,7 @@ func runScan(
 	ctx context.Context,
 	scopePath, seedURL, dbFlag, domain string,
 	s3EndpointFlag, azureEndpointFlag, gcsEndpointFlag string,
+	adminWordlistFlag string,
 	threads int,
 	crawlCfg crawler.Config,
 ) error {
@@ -203,28 +277,36 @@ func runScan(
 		}
 	}
 
-	if inv != nil {
-		if saveErr := st.SaveInventory(ctx, scanID, inv); saveErr != nil {
-			slog.Error("failed to persist inventory", "err", saveErr)
-		}
+	// Ensure inventory is non-nil so checks can run even after a partial crawl.
+	if inv == nil {
+		inv = &crawler.Inventory{}
 	}
 
-	// Run registered checks. Cloud checks run only if the endpoint is authorised
-	// in cloud_buckets; they log an info message and skip otherwise.
-	cloudChecks := []checks.Check{
-		&cloud.S3Check{Endpoint: resolvedS3Endpoint, PathStyle: resolvedS3Endpoint != ""},
-		&cloud.AzureCheck{Endpoint: resolvedAzureEndpoint},
-		&cloud.GCSCheck{Endpoint: resolvedGCSEndpoint},
-	}
+	// Build the check target. Inventory may be extended by API checks (e.g. swagger
+	// endpoint enumeration) before SaveInventory is called below.
 	checkTarget := &checks.Target{
 		Inventory:   inv,
 		Scope:       sc,
 		HTTP:        client,
 		Domain:      domain,
 		Concurrency: threads,
+		SeedURLs:    []string{seedURL},
 	}
+
+	allChecks := []checks.Check{
+		// Cloud storage checks.
+		&cloud.S3Check{Endpoint: resolvedS3Endpoint, PathStyle: resolvedS3Endpoint != ""},
+		&cloud.AzureCheck{Endpoint: resolvedAzureEndpoint},
+		&cloud.GCSCheck{Endpoint: resolvedGCSEndpoint},
+		// Admin panel and sensitive path discovery.
+		&admin.AdminCheck{WordlistPath: adminWordlistFlag},
+		// API spec and GraphQL discovery.
+		&api.SwaggerCheck{},
+		&api.GraphQLCheck{},
+	}
+
 	totalFindings := 0
-	for _, ck := range cloudChecks {
+	for _, ck := range allChecks {
 		findings, ckErr := ck.Run(ctx, checkTarget)
 		if ckErr != nil {
 			slog.Error("check failed", "check", ck.ID(), "err", ckErr)
@@ -259,12 +341,19 @@ func runScan(
 				OWASP:           f.OWASP,
 				Confidence:      string(f.Confidence),
 				EvidenceID:      evidenceID,
+				WordlistSource:  f.WordlistSource,
 			}); fErr != nil {
 				slog.Error("failed to persist finding", "check", ck.ID(), "err", fErr)
 			} else {
 				totalFindings++
 			}
 		}
+	}
+
+	// Save inventory after checks so that API-discovered endpoints (e.g. from
+	// swagger spec enumeration) are persisted alongside the crawler inventory.
+	if saveErr := st.SaveInventory(ctx, scanID, inv); saveErr != nil {
+		slog.Error("failed to persist inventory", "err", saveErr)
 	}
 
 	// Emit a single summary of any out-of-scope blocks rather than per-request
@@ -275,19 +364,16 @@ func runScan(
 		slog.Error("failed to finalize scan record", "err", finalErr)
 	}
 
-	if inv != nil {
-		paramSet := make(map[string]bool)
-		for _, p := range inv.Parameters {
-			paramSet[p.Name] = true
-		}
-		fmt.Printf("Scan complete\n")
-		fmt.Printf("  URLs discovered:      %d\n", len(inv.URLs))
-		fmt.Printf("  Forms found:          %d\n", len(inv.Forms))
-		fmt.Printf("  Unique parameters:    %d\n", len(paramSet))
-		fmt.Printf("  JS artifacts:         %d\n", len(inv.JSArtifacts))
-		fmt.Printf("  Findings:             %d\n", totalFindings)
+	paramSet := make(map[string]bool)
+	for _, p := range inv.Parameters {
+		paramSet[p.Name] = true
 	}
-
+	fmt.Printf("Scan complete\n")
+	fmt.Printf("  URLs discovered:      %d\n", len(inv.URLs))
+	fmt.Printf("  Forms found:          %d\n", len(inv.Forms))
+	fmt.Printf("  Unique parameters:    %d\n", len(paramSet))
+	fmt.Printf("  JS artifacts:         %d\n", len(inv.JSArtifacts))
+	fmt.Printf("  Findings:             %d\n", totalFindings)
 	fmt.Printf("  DB: %s\n", resolvedDBPath)
 
 	if exitStatus != 0 {

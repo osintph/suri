@@ -73,6 +73,7 @@ type FindingRecord struct {
 	OWASP           string
 	Confidence      string
 	EvidenceID      *int64
+	WordlistSource  string // empty for non-wordlist findings; stored as NULL in DB
 }
 
 // Open opens or creates a SQLite database at path and applies schema
@@ -278,14 +279,20 @@ func (s *Store) InsertFinding(ctx context.Context, rec FindingRecord) (int64, er
 	h := sha256.Sum256([]byte(rec.CheckID + "|" + rec.URL + "|" + rec.Parameter))
 	identityHash := hex.EncodeToString(h[:])
 
+	// Store wordlist_source as SQL NULL when empty.
+	var wordlistSource interface{}
+	if rec.WordlistSource != "" {
+		wordlistSource = rec.WordlistSource
+	}
+
 	res, err := s.db.ExecContext(ctx,
 		`INSERT INTO findings
 		 (scan_id, first_seen_scan_id, check_id, severity, title, description,
-		  url, parameter, cwe, owasp, confidence, evidence_id, identity_hash)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		  url, parameter, cwe, owasp, confidence, evidence_id, identity_hash, wordlist_source)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		rec.ScanID, rec.FirstSeenScanID, rec.CheckID, rec.Severity, rec.Title,
 		rec.Description, rec.URL, rec.Parameter, rec.CWE, rec.OWASP,
-		rec.Confidence, rec.EvidenceID, identityHash,
+		rec.Confidence, rec.EvidenceID, identityHash, wordlistSource,
 	)
 	if err != nil {
 		return 0, fmt.Errorf("inserting finding: %w", err)

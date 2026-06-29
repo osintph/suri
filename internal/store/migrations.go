@@ -28,11 +28,12 @@ var schemaSQL string
 
 // SchemaVersion is the version number recorded in schema_migrations after a
 // fresh database is initialised. Increment when adding new migrations.
-const SchemaVersion = 1
+const SchemaVersion = 2
 
 // applyMigrations ensures the database schema is at SchemaVersion.
 // It bootstraps the schema_migrations table unconditionally so that the
-// version check is always safe, then applies schema.sql exactly once.
+// version check is always safe, then applies schema.sql exactly once (v1)
+// and any incremental ALTER TABLE statements for later versions.
 func (s *Store) applyMigrations(ctx context.Context) error {
 	if _, err := s.db.ExecContext(ctx, `
 		CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -54,8 +55,7 @@ func (s *Store) applyMigrations(ctx context.Context) error {
 		return nil
 	}
 
-	// Version 1: apply the full schema. Future versions add ALTER TABLE
-	// statements or new CREATE TABLE blocks in additional if-branches below.
+	// Version 1: apply the full schema.
 	if current < 1 {
 		if _, err := s.db.ExecContext(ctx, schemaSQL); err != nil {
 			return fmt.Errorf("applying schema v1: %w", err)
@@ -65,6 +65,22 @@ func (s *Store) applyMigrations(ctx context.Context) error {
 			time.Now().UTC().Format(time.RFC3339),
 		); err != nil {
 			return fmt.Errorf("recording migration v1: %w", err)
+		}
+		current = 1
+	}
+
+	// Version 2: add wordlist_source to the findings table.
+	if current < 2 {
+		if _, err := s.db.ExecContext(ctx,
+			`ALTER TABLE findings ADD COLUMN wordlist_source TEXT`,
+		); err != nil {
+			return fmt.Errorf("applying schema v2 (wordlist_source): %w", err)
+		}
+		if _, err := s.db.ExecContext(ctx,
+			`INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?)`,
+			time.Now().UTC().Format(time.RFC3339),
+		); err != nil {
+			return fmt.Errorf("recording migration v2: %w", err)
 		}
 	}
 

@@ -1,0 +1,9 @@
+# Scope file for a local OWASP Juice Shop instance.
+# Juice Shop is an intentionally vulnerable web app for security training.
+# This scope file is for authorized local testing only.
+engagement_name = "juice-shop-local"
+notes           = "Local OWASP Juice Shop test instance. Not a real engagement."
+
+hostnames = ["localhost"]
+ips       = ["127.0.0.1"]
+ports     = [3000]
