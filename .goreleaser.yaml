@@ -46,3 +46,17 @@ checksum:
 
 snapshot:
   version_template: "{{ incpatch .Version }}-snapshot"
+
+homebrew_casks:
+  - name: suri
+    ids:
+      - suri
+    binaries:
+      - suri
+    homepage: "https://github.com/osintph/suri"
+    description: "Web application security scanner for authorized VAPT engagements"
+    repository:
+      owner: osintph
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
