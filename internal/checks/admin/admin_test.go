@@ -22,7 +22,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/osintph/suri/internal/checks"
@@ -65,6 +64,8 @@ func miniWordlist(t *testing.T, paths ...string) string {
 	return f.Name()
 }
 
+// TestAdminCheckFound200 verifies that a 200 response whose body does not match
+// any soft-response pattern emits an info/tentative finding.
 func TestAdminCheckFound200(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/admin" {
@@ -72,7 +73,6 @@ func TestAdminCheckFound200(t *testing.T) {
 			w.Write([]byte(strings.Repeat("admin panel content", 20)))
 			return
 		}
-		// All other paths (including the baseline probes) return a short distinct body.
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("not found"))
 	}))
@@ -90,19 +90,26 @@ func TestAdminCheckFound200(t *testing.T) {
 	}
 	found := false
 	for _, f := range findings {
-		if strings.Contains(f.URL, "/admin") && f.Severity == checks.SeverityMedium {
+		if strings.Contains(f.URL, "/admin") {
+			if f.Severity != checks.SeverityInfo {
+				t.Errorf("Severity: want info for unmatched 200, got %q", f.Severity)
+			}
+			if f.Confidence != checks.ConfidenceTentative {
+				t.Errorf("Confidence: want tentative for unmatched 200, got %q", f.Confidence)
+			}
 			found = true
 		}
 	}
 	if !found {
-		t.Errorf("expected medium-severity finding for /admin, got %+v", findings)
+		t.Errorf("expected finding for /admin, got %+v", findings)
 	}
 }
 
+// TestAdminCheckSoft404Filtered verifies that a 200 response whose body matches
+// a known soft-response pattern (Angular SPA shell) is suppressed entirely.
 func TestAdminCheckSoft404Filtered(t *testing.T) {
-	const body = "custom not found page with fixed length padding to be consistent"
+	const body = `<html><body><app-root></app-root></body></html>`
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Server returns 200 for every path (soft-404).
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(body))
 	}))
@@ -116,11 +123,12 @@ func TestAdminCheckSoft404Filtered(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(findings) != 0 {
-		t.Errorf("expected soft-404 responses to be filtered, got %d finding(s): %+v", len(findings), findings)
+		t.Errorf("expected Angular SPA shell 200 responses to be suppressed, got %d finding(s): %+v", len(findings), findings)
 	}
 }
 
-func TestAdminCheck403IsInfo(t *testing.T) {
+// TestAdminCheck403IsMedium verifies that a 403 response emits a medium/firm finding.
+func TestAdminCheck403IsMedium(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/admin" {
 			w.WriteHeader(http.StatusForbidden)
@@ -143,8 +151,11 @@ func TestAdminCheck403IsInfo(t *testing.T) {
 		t.Fatal("expected finding for 403 path")
 	}
 	f := findings[0]
-	if f.Severity != checks.SeverityInfo {
-		t.Errorf("Severity: want info, got %q", f.Severity)
+	if f.Severity != checks.SeverityMedium {
+		t.Errorf("Severity: want medium, got %q", f.Severity)
+	}
+	if f.Confidence != checks.ConfidenceFirm {
+		t.Errorf("Confidence: want firm, got %q", f.Confidence)
 	}
 	if !strings.Contains(f.URL, "/admin") {
 		t.Errorf("URL: expected /admin in %q", f.URL)
@@ -221,137 +232,111 @@ func TestAdminCheckWordlistSource(t *testing.T) {
 	}
 }
 
-func TestSoft200SigMatches(t *testing.T) {
-	sig := soft200Sig{status: 200, bodyLen: 1000}
-	cases := []struct {
-		status  int
-		bodyLen int
-		want    bool
-	}{
-		{200, 1000, true},  // exact match
-		{200, 1049, true},  // within 5%
-		{200, 1050, false}, // at the boundary (5% = 50, delta=50 is not < 50)
-		{200, 800, false},  // too different
-		{404, 1000, false}, // different status
-	}
-	for _, tc := range cases {
-		got := sig.matches(tc.status, tc.bodyLen)
-		if got != tc.want {
-			t.Errorf("sig.matches(%d, %d) = %v, want %v", tc.status, tc.bodyLen, got, tc.want)
-		}
-	}
-}
-
-// TestAdminCheckMultiTemplateSoft200 verifies that a host serving two distinct
-// soft-200 templates is fully suppressed when both templates are captured during
-// the three-probe baseline calibration.
-//
-// The three baseline paths use different structural shapes:
-//   - baselinePath1 (simple)      → template A (9900 bytes, e.g. Angular SPA)
-//   - baselinePath2 (nested)      → template B (2400 bytes, e.g. Express error)
-//   - baselinePath3 (well-known)  → template A again (deduped in cache)
-//
-// All wordlist probes returning either template must be suppressed, producing
-// zero findings. This is the key difference from the 5.5 approach, which would
-// have emitted a finding for the first wordlist probe hitting template B.
-func TestAdminCheckMultiTemplateSoft200(t *testing.T) {
-	const (
-		templateALen = 9900 // Angular SPA
-		templateBLen = 2400 // Express error page
-	)
-	templateA := strings.Repeat("a", templateALen)
-	templateB := strings.Repeat("b", templateBLen)
-
+// TestAdminCheckSPAShellSuppression verifies that Angular SPA shell content
+// (<app-root></app-root>) in a 200 response is suppressed.
+func TestAdminCheckSPAShellSuppression(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/" + baselinePath1, "/" + baselinePath3:
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(templateA))
-		case "/" + baselinePath2:
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(templateB))
-		case "/path-a-1", "/path-a-2":
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(templateA))
-		case "/path-b-1", "/path-b-2", "/path-b-3":
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(templateB))
-		default:
-			w.WriteHeader(http.StatusNotFound)
-		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<!DOCTYPE html><html><body><app-root></app-root></body></html>`))
 	}))
 	defer srv.Close()
 
 	target := testTarget(srv)
-	target.Concurrency = 1 // sequential for determinism
-
-	ck := &AdminCheck{
-		WordlistPath: miniWordlist(t, "/path-a-1", "/path-a-2", "/path-b-1", "/path-b-2", "/path-b-3"),
-	}
+	ck := &AdminCheck{WordlistPath: miniWordlist(t, "/admin", "/dashboard", "/config")}
 
 	findings, err := ck.Run(context.Background(), target)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-
-	// Both templates were captured during baseline calibration, so every
-	// wordlist probe matches the cache. Expected: zero findings.
 	if len(findings) != 0 {
-		t.Errorf("expected 0 findings (both templates suppressed by baseline), got %d: %v", len(findings), findings)
+		t.Errorf("expected Angular SPA shell to be suppressed, got %d finding(s)", len(findings))
 	}
 }
 
-// TestAdminCheckThreeBaselineProbes verifies that exactly three calibration
-// probes are issued before any wordlist probing begins, and that those probes
-// use the three defined baseline path shapes.
-func TestAdminCheckThreeBaselineProbes(t *testing.T) {
-	var mu sync.Mutex
-	var requestPaths []string
-
+// TestAdminCheckExpressErrorSuppression verifies that Express "Unexpected path"
+// error pages in a 200 response are suppressed.
+func TestAdminCheckExpressErrorSuppression(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		mu.Lock()
-		requestPaths = append(requestPaths, r.URL.Path)
-		mu.Unlock()
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(`<html><head><title>Error: Unexpected path: /admin</title></head><body>Error</body></html>`))
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	ck := &AdminCheck{WordlistPath: miniWordlist(t, "/admin", "/login")}
+
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected Express error page to be suppressed, got %d finding(s)", len(findings))
+	}
+}
+
+// TestAdminCheckUnmatchedTwoHundredIsTentative verifies that a 200 response
+// with arbitrary content (no pattern match) emits a finding with
+// severity info and confidence tentative.
+func TestAdminCheckUnmatchedTwoHundredIsTentative(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("Welcome to the admin area. Please log in."))
+			return
+		}
 		w.WriteHeader(http.StatusNotFound)
 	}))
 	defer srv.Close()
 
 	target := testTarget(srv)
-	target.Concurrency = 1 // sequential so request order is deterministic
+	ck := &AdminCheck{WordlistPath: miniWordlist(t, "/admin")}
 
-	ck := &AdminCheck{
-		WordlistPath: miniWordlist(t, "/admin"),
-	}
-
-	_, err := ck.Run(context.Background(), target)
+	findings, err := ck.Run(context.Background(), target)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
+	if len(findings) != 1 {
+		t.Fatalf("expected exactly 1 finding, got %d", len(findings))
+	}
+	f := findings[0]
+	if f.Severity != checks.SeverityInfo {
+		t.Errorf("Severity: want info for unmatched 200, got %q", f.Severity)
+	}
+	if f.Confidence != checks.ConfidenceTentative {
+		t.Errorf("Confidence: want tentative for unmatched 200, got %q", f.Confidence)
+	}
+}
 
-	// The first three requests must be the calibration probes.
-	wantBaseline := []string{
-		"/" + baselinePath1,
-		"/" + baselinePath2,
-		"/" + baselinePath3,
-	}
-	if len(requestPaths) < len(wantBaseline) {
-		t.Fatalf("expected at least %d requests, got %d", len(wantBaseline), len(requestPaths))
-	}
-	for i, want := range wantBaseline {
-		if requestPaths[i] != want {
-			t.Errorf("request[%d]: want %s, got %s", i, want, requestPaths[i])
+// TestAdminCheckFourOhOneIsFirm verifies that a 401 response emits a finding
+// with severity medium and confidence firm.
+func TestAdminCheckFourOhOneIsFirm(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin" {
+			w.Header().Set("WWW-Authenticate", `Basic realm="Admin"`)
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte("authentication required"))
+			return
 		}
-	}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
 
-	// No baseline path must appear after the calibration phase ends.
-	baselineSet := make(map[string]bool)
-	for _, bp := range wantBaseline {
-		baselineSet[bp] = true
+	target := testTarget(srv)
+	ck := &AdminCheck{WordlistPath: miniWordlist(t, "/admin")}
+
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	for i, p := range requestPaths[len(wantBaseline):] {
-		if baselineSet[p] {
-			t.Errorf("baseline probe path %s appeared at position %d (after calibration)", p, len(wantBaseline)+i)
-		}
+	if len(findings) != 1 {
+		t.Fatalf("expected exactly 1 finding, got %d", len(findings))
+	}
+	f := findings[0]
+	if f.Severity != checks.SeverityMedium {
+		t.Errorf("Severity: want medium for 401, got %q", f.Severity)
+	}
+	if f.Confidence != checks.ConfidenceFirm {
+		t.Errorf("Confidence: want firm for 401, got %q", f.Confidence)
 	}
 }
 

@@ -24,6 +24,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -32,84 +33,34 @@ import (
 	"github.com/osintph/suri/internal/wordlists"
 )
 
-// Three distinct baseline paths are probed before any wordlist probe runs.
-// Different path shapes (simple, nested, well-known prefix) trigger different
-// server behaviours on frameworks like Express, so together they capture all
-// soft-404 templates a host may serve.
-const (
-	baselinePath1 = "suri-baseline-3c4d5e6f7a8b9c0d"
-	baselinePath2 = "suri-baseline-1a2b3c4d5e6f/7a8b9c0d1e2f"
-	baselinePath3 = ".well-known/suri-baseline-3a4b5c6d7e8f"
-)
-
-// maxSigs is the maximum number of distinct soft-200 templates tracked per host.
-const maxSigs = 5
-
-// soft200Sig represents one distinct "not found" response template.
-// Servers that return HTTP 200 for every path (soft-404) produce a recognisable
-// signature of (status, body length). We track up to maxSigs per host.
-type soft200Sig struct {
-	status  int
-	bodyLen int
+// softResponsePatterns identifies 200 responses that are soft-404s: the server
+// returns 200 for paths that do not exist, producing recognisable framework-
+// specific markup. The first 4 KB of the body is checked for speed.
+var softResponsePatterns = []*regexp.Regexp{
+	regexp.MustCompile(`<title>Error:\s*Unexpected\s*path`), // Express error page
+	regexp.MustCompile(`Cannot\s+(GET|POST|PUT|DELETE)\s+/`), // Express bare error
+	regexp.MustCompile(`<app-root></app-root>`),              // Angular SPA shell
+	regexp.MustCompile(`<div\s+id="root"></div>`),            // React SPA shell
+	regexp.MustCompile(`<div\s+id="app"></div>`),             // Vue SPA shell
+	regexp.MustCompile(`__NEXT_DATA__`),                      // Next.js
+	regexp.MustCompile(`<title>404[^<]*</title>`),            // generic 404 page title
+	regexp.MustCompile(`<title>Page\s+Not\s+Found</title>`),
+	regexp.MustCompile(`<title>Not\s+Found</title>`),
 }
 
-// matches returns true when the given status and body length are consistent
-// with this template, meaning the response is likely a soft-404.
-// Body length within 5% (minimum 10-byte floor) is treated as the same template.
-// Strictly less-than so that exactly 5% difference is treated as distinct.
-func (s soft200Sig) matches(status, bodyLen int) bool {
-	if status != s.status {
-		return false
+// isSoftResponse returns true when the body matches any known framework
+// soft-404 pattern. Only the first 4 KB is examined.
+func isSoftResponse(body []byte) bool {
+	preview := body
+	if len(preview) > 4096 {
+		preview = preview[:4096]
 	}
-	delta := bodyLen - s.bodyLen
-	if delta < 0 {
-		delta = -delta
-	}
-	threshold := s.bodyLen * 5 / 100
-	if threshold < 10 {
-		threshold = 10
-	}
-	return delta < threshold
-}
-
-// hostCache tracks up to maxSigs distinct soft-200 templates per host.
-// The cache is populated during the calibration phase and is read-only during
-// wordlist probing.
-type hostCache struct {
-	mu   sync.Mutex
-	sigs []soft200Sig
-}
-
-// matchesAny reports whether the given response matches any cached template.
-// Must be called with mu held.
-func (c *hostCache) matchesAny(status, bodyLen int) bool {
-	for _, s := range c.sigs {
-		if s.matches(status, bodyLen) {
+	for _, re := range softResponsePatterns {
+		if re.Match(preview) {
 			return true
 		}
 	}
 	return false
-}
-
-// tryAdd adds a new template to the cache if it is not already covered and
-// the cache has room. Intended for use during calibration only (not thread-safe;
-// the cache is not yet shared during calibration).
-func (c *hostCache) tryAdd(status, bodyLen int) {
-	if len(c.sigs) >= maxSigs {
-		return
-	}
-	if c.matchesAny(status, bodyLen) {
-		return
-	}
-	c.sigs = append(c.sigs, soft200Sig{status: status, bodyLen: bodyLen})
-}
-
-// isSoftResponse reports whether the given status and body length match any
-// cached soft-200 template. Thread-safe; intended for use during probing.
-func (c *hostCache) isSoftResponse(status, bodyLen int) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.matchesAny(status, bodyLen)
 }
 
 // AdminCheck probes a target's common admin and sensitive paths using a wordlist.
@@ -124,9 +75,8 @@ func (c *AdminCheck) Severity() checks.Severity { return checks.SeverityMedium }
 func (c *AdminCheck) Category() checks.Category { return checks.CategoryAdmin }
 
 // Run probes each admin wordlist entry against all origins derived from the target.
-// For each origin, a calibration phase probes three distinct path shapes to seed
-// the per-host soft-200 cache before any wordlist probing begins. This catches
-// servers that serve different "not found" templates for different path shapes.
+// Soft-404 suppression is done per-response using content fingerprinting; no
+// calibration probes are made before wordlist probing starts.
 func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
 	wl, err := wordlists.Load(wordlists.AdminCommon, c.WordlistPath)
 	if err != nil {
@@ -154,15 +104,6 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 	wlSource := wl.Source.String()
 
 	for _, origin := range origins {
-		// Calibrate the soft-200 cache before any wordlist probing. The three
-		// baseline paths use different structural shapes so that servers which
-		// return distinct error templates for different path patterns are all
-		// captured. Calibration is sequential and completes before goroutines start.
-		cache := calibrateBaseline(ctx, target, origin)
-		slog.Info("admin: soft-200 baseline calibrated",
-			"host", origin,
-			"templates", len(cache.sigs))
-
 		for _, path := range wl.Entries {
 			select {
 			case <-ctx.Done():
@@ -174,16 +115,16 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 			probeURL := strings.TrimRight(origin, "/") + "/" + strings.TrimLeft(path, "/")
 			sem <- struct{}{}
 			wg.Add(1)
-			go func(pu string, c *hostCache) {
+			go func(pu string) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				f := probeAdminPath(ctx, target, pu, c, wlSource)
+				f := probeAdminPath(ctx, target, pu, wlSource)
 				if f != nil {
 					mu.Lock()
 					findings = append(findings, f)
 					mu.Unlock()
 				}
-			}(probeURL, cache)
+			}(probeURL)
 		}
 	}
 
@@ -193,10 +134,8 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 }
 
 // probeAdminPath makes a single GET request and returns a Finding if the
-// response is interesting (not a 404, not a redirect, not a soft-404).
-// The cache is queried but never written during probing; the calibration
-// phase has already sealed the set of known soft-200 templates.
-func probeAdminPath(ctx context.Context, target *checks.Target, rawURL string, cache *hostCache, wlSource string) *checks.Finding {
+// response is interesting (not a 404, not a redirect, not a recognised soft-404).
+func probeAdminPath(ctx context.Context, target *checks.Target, rawURL, wlSource string) *checks.Finding {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil
@@ -210,7 +149,6 @@ func probeAdminPath(ctx context.Context, target *checks.Target, rawURL string, c
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	status := resp.StatusCode
-	bodyLen := len(body)
 
 	// Skip genuine 404s.
 	if status == http.StatusNotFound {
@@ -220,11 +158,8 @@ func probeAdminPath(ctx context.Context, target *checks.Target, rawURL string, c
 	if status >= 300 && status < 400 {
 		return nil
 	}
-
-	// For 200 responses, check the calibrated cache. A cache hit means this
-	// response matches a known soft-404 template; suppress without emitting.
-	// 401, 403, and 5xx bypass the cache and are emitted directly.
-	if status == http.StatusOK && cache.isSoftResponse(status, bodyLen) {
+	// Suppress 200s whose content matches a known framework soft-404 pattern.
+	if status == http.StatusOK && isSoftResponse(body) {
 		return nil
 	}
 
@@ -232,25 +167,39 @@ func probeAdminPath(ctx context.Context, target *checks.Target, rawURL string, c
 }
 
 // buildFinding constructs a Finding for an interesting admin path response.
+// Unmatched 200s get tentative confidence; 401/403 and 5xx get firm confidence.
 func buildFinding(rawURL string, status int, body []byte, wlSource string) *checks.Finding {
 	var severity checks.Severity
+	var confidence checks.Confidence
 	var title, description string
 
 	switch {
 	case status == http.StatusOK:
-		severity = checks.SeverityMedium
-		title = "Admin path accessible"
-		description = fmt.Sprintf("Admin or sensitive path responded with HTTP 200 OK at %s.", rawURL)
-	case status == http.StatusForbidden || status == http.StatusUnauthorized:
 		severity = checks.SeverityInfo
+		confidence = checks.ConfidenceTentative
+		title = "Sensitive path responded with 200"
+		description = fmt.Sprintf(
+			"Path %s returned HTTP 200. Content did not match any known framework soft-404 pattern; manual review is recommended.",
+			rawURL,
+		)
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		severity = checks.SeverityMedium
+		confidence = checks.ConfidenceFirm
 		title = "Admin path restricted"
 		if status == http.StatusForbidden {
-			description = fmt.Sprintf("Admin or sensitive path responded with HTTP 403 Forbidden at %s (path exists, access denied).", rawURL)
+			description = fmt.Sprintf(
+				"Admin or sensitive path responded with HTTP 403 Forbidden at %s (path exists, access denied).",
+				rawURL,
+			)
 		} else {
-			description = fmt.Sprintf("Admin or sensitive path responded with HTTP 401 Unauthorized at %s (path exists, authentication required).", rawURL)
+			description = fmt.Sprintf(
+				"Admin or sensitive path responded with HTTP 401 Unauthorized at %s (path exists, authentication required).",
+				rawURL,
+			)
 		}
 	default:
 		severity = checks.SeverityInfo
+		confidence = checks.ConfidenceFirm
 		title = "Admin path responded"
 		description = fmt.Sprintf("Admin or sensitive path responded with HTTP %d at %s.", status, rawURL)
 	}
@@ -269,33 +218,10 @@ func buildFinding(rawURL string, status int, body []byte, wlSource string) *chec
 		Title:          title,
 		Description:    description,
 		URL:            rawURL,
-		Confidence:     checks.ConfidenceFirm,
+		Confidence:     confidence,
 		Evidence:       evidence,
 		WordlistSource: wlSource,
 	}
-}
-
-// calibrateBaseline probes three guaranteed-nonexistent paths with distinct
-// structural shapes and populates a hostCache with any distinct response
-// templates observed. The cache is sealed after this function returns; no
-// further writes occur during wordlist probing.
-func calibrateBaseline(ctx context.Context, target *checks.Target, origin string) *hostCache {
-	cache := &hostCache{}
-	for _, p := range []string{baselinePath1, baselinePath2, baselinePath3} {
-		probeURL := strings.TrimRight(origin, "/") + "/" + p
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
-		if err != nil {
-			continue
-		}
-		resp, err := target.HTTP.Do(ctx, req)
-		if err != nil {
-			continue
-		}
-		body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-		resp.Body.Close()
-		cache.tryAdd(resp.StatusCode, len(body))
-	}
-	return cache
 }
 
 // uniqueOrigins extracts unique scheme+host origins from seed URLs and the
