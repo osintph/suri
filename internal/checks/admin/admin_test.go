@@ -22,6 +22,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/osintph/suri/internal/checks"
@@ -71,7 +72,7 @@ func TestAdminCheckFound200(t *testing.T) {
 			w.Write([]byte(strings.Repeat("admin panel content", 20)))
 			return
 		}
-		// All other paths (including the 404-probe) return a short distinct body.
+		// All other paths (including the baseline probes) return a short distinct body.
 		w.WriteHeader(http.StatusNotFound)
 		w.Write([]byte("not found"))
 	}))
@@ -241,16 +242,21 @@ func TestSoft200SigMatches(t *testing.T) {
 	}
 }
 
-// TestAdminCheckMultiTemplateSoft200 verifies that a host with two distinct
-// soft-200 response templates (e.g. an Angular SPA at 9900 bytes and an Express
-// error page at 2400 bytes) suppresses false positives correctly.
+// TestAdminCheckMultiTemplateSoft200 verifies that a host serving two distinct
+// soft-200 templates is fully suppressed when both templates are captured during
+// the three-probe baseline calibration.
 //
-// The UUID baseline probe seeds the cache with the first template (9900 bytes).
-// The first new template shape (2400 bytes) triggers a finding and is added to
-// the cache. Subsequent responses in either cached template are suppressed.
+// The three baseline paths use different structural shapes:
+//   - baselinePath1 (simple)      → template A (9900 bytes, e.g. Angular SPA)
+//   - baselinePath2 (nested)      → template B (2400 bytes, e.g. Express error)
+//   - baselinePath3 (well-known)  → template A again (deduped in cache)
+//
+// All wordlist probes returning either template must be suppressed, producing
+// zero findings. This is the key difference from the 5.5 approach, which would
+// have emitted a finding for the first wordlist probe hitting template B.
 func TestAdminCheckMultiTemplateSoft200(t *testing.T) {
 	const (
-		templateALen = 9900 // Angular SPA (baseline / UUID probe response)
+		templateALen = 9900 // Angular SPA
 		templateBLen = 2400 // Express error page
 	)
 	templateA := strings.Repeat("a", templateALen)
@@ -258,34 +264,29 @@ func TestAdminCheckMultiTemplateSoft200(t *testing.T) {
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case "/" + notFoundProbePath:
-			// Baseline probe returns template A.
+		case "/" + baselinePath1, "/" + baselinePath3:
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(templateA))
-		case "/path-a-1":
-			// Same as baseline: should be suppressed.
-			w.WriteHeader(http.StatusOK)
-			w.Write([]byte(templateA))
-		case "/path-b-1":
-			// First hit of template B: new template, emit finding, add to cache.
+		case "/" + baselinePath2:
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(templateB))
-		case "/path-b-2":
-			// Second hit of template B: already in cache, suppress.
+		case "/path-a-1", "/path-a-2":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(templateA))
+		case "/path-b-1", "/path-b-2", "/path-b-3":
 			w.WriteHeader(http.StatusOK)
 			w.Write([]byte(templateB))
 		default:
 			w.WriteHeader(http.StatusNotFound)
-			w.Write([]byte("not found"))
 		}
 	}))
 	defer srv.Close()
 
 	target := testTarget(srv)
-	target.Concurrency = 1 // sequential so path order is deterministic
+	target.Concurrency = 1 // sequential for determinism
 
 	ck := &AdminCheck{
-		WordlistPath: miniWordlist(t, "/path-a-1", "/path-b-1", "/path-b-2"),
+		WordlistPath: miniWordlist(t, "/path-a-1", "/path-a-2", "/path-b-1", "/path-b-2", "/path-b-3"),
 	}
 
 	findings, err := ck.Run(context.Background(), target)
@@ -293,15 +294,64 @@ func TestAdminCheckMultiTemplateSoft200(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// /path-a-1 matches the baseline (template A) → suppressed.
-	// /path-b-1 is a new template (template B) → finding emitted, added to cache.
-	// /path-b-2 matches template B (now cached) → suppressed.
-	// Expected: exactly 1 finding, for /path-b-1.
-	if len(findings) != 1 {
-		t.Fatalf("expected 1 finding (for /path-b-1), got %d: %v", len(findings), findings)
+	// Both templates were captured during baseline calibration, so every
+	// wordlist probe matches the cache. Expected: zero findings.
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings (both templates suppressed by baseline), got %d: %v", len(findings), findings)
 	}
-	if !strings.Contains(findings[0].URL, "/path-b-1") {
-		t.Errorf("expected finding URL to contain /path-b-1, got %q", findings[0].URL)
+}
+
+// TestAdminCheckThreeBaselineProbes verifies that exactly three calibration
+// probes are issued before any wordlist probing begins, and that those probes
+// use the three defined baseline path shapes.
+func TestAdminCheckThreeBaselineProbes(t *testing.T) {
+	var mu sync.Mutex
+	var requestPaths []string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		requestPaths = append(requestPaths, r.URL.Path)
+		mu.Unlock()
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	target.Concurrency = 1 // sequential so request order is deterministic
+
+	ck := &AdminCheck{
+		WordlistPath: miniWordlist(t, "/admin"),
+	}
+
+	_, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// The first three requests must be the calibration probes.
+	wantBaseline := []string{
+		"/" + baselinePath1,
+		"/" + baselinePath2,
+		"/" + baselinePath3,
+	}
+	if len(requestPaths) < len(wantBaseline) {
+		t.Fatalf("expected at least %d requests, got %d", len(wantBaseline), len(requestPaths))
+	}
+	for i, want := range wantBaseline {
+		if requestPaths[i] != want {
+			t.Errorf("request[%d]: want %s, got %s", i, want, requestPaths[i])
+		}
+	}
+
+	// No baseline path must appear after the calibration phase ends.
+	baselineSet := make(map[string]bool)
+	for _, bp := range wantBaseline {
+		baselineSet[bp] = true
+	}
+	for i, p := range requestPaths[len(wantBaseline):] {
+		if baselineSet[p] {
+			t.Errorf("baseline probe path %s appeared at position %d (after calibration)", p, len(wantBaseline)+i)
+		}
 	}
 }
 
