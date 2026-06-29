@@ -78,6 +78,12 @@ type Evidence struct {
 	ResponseBytes  []byte
 	ResponseStatus int
 	ResponseTimeMs int64
+
+	// Backup-file check fields. Only set by BackupsCheck.
+	OriginalURL      string  // URL of the original file the backup was derived from
+	OriginalBodyHash string  // hex SHA-256 of original body (first 32 KB)
+	BackupBodyHash   string  // hex SHA-256 of backup body (first 32 KB)
+	JaccardScore     float64 // Jaccard token-set similarity between original and backup (0–1)
 }
 
 // Finding is a potential vulnerability or misconfiguration discovered by a check.

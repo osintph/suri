@@ -29,11 +29,14 @@ import (
 )
 
 func TestBackupsCheckFoundBak(t *testing.T) {
-	// Server returns 200 for .bak files and 404 for everything else.
+	// Server returns the original body for /config.php and the same body for
+	// /config.php.bak. The check must detect identical content and emit a finding.
+	const body = "<?php\n$db_password = 'hunter2';\n"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, ".bak") {
+		w.Header().Set("Content-Type", "text/plain")
+		if strings.HasSuffix(r.URL.Path, ".bak") || r.URL.Path == "/config.php" {
 			w.WriteHeader(http.StatusOK)
-			w.Write([]byte("DB_PASSWORD=secret"))
+			w.Write([]byte(body))
 			return
 		}
 		w.WriteHeader(http.StatusNotFound)
@@ -257,5 +260,237 @@ func TestBackupCheckRespectsMaxProbes(t *testing.T) {
 	}
 	if got == 0 {
 		t.Error("expected some probes, got 0")
+	}
+}
+
+// TestBackupCheckIdenticalContent verifies that when the .bak file returns the
+// same body as the original, a confirmed finding is emitted.
+func TestBackupCheckIdenticalContent(t *testing.T) {
+	const body = "var secret = 'hunter2';"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.SeedURLs = []string{srv.URL}
+	target.Inventory.URLs = []*crawler.DiscoveredURL{
+		{URL: srv.URL + "/app.js", Source: "html", Depth: 1, ResponseStatus: 200, BodyHash: "x"},
+	}
+
+	ck := &BackupsCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected at least 1 finding for identical content, got 0")
+	}
+	f := findings[0]
+	if f.Confidence != "confirmed" {
+		t.Errorf("expected confirmed confidence, got %q", f.Confidence)
+	}
+	if f.Evidence == nil {
+		t.Fatal("expected evidence, got nil")
+	}
+	if f.Evidence.JaccardScore != 1.0 {
+		t.Errorf("expected JaccardScore 1.0 for identical content, got %f", f.Evidence.JaccardScore)
+	}
+}
+
+// TestBackupCheckSimilarContent verifies that when the .bak file shares enough
+// tokens with the original (Jaccard >= 0.5), a firm finding is emitted.
+func TestBackupCheckSimilarContent(t *testing.T) {
+	const origBody = "var a = 1; var b = 2; var c = 3;"
+	const bakBody = "var a = 1; var b = 2; var c = 99;"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/javascript")
+		if strings.HasSuffix(r.URL.Path, ".bak") {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(bakBody))
+			return
+		}
+		if r.URL.Path == "/foo.js" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(origBody))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.SeedURLs = []string{srv.URL}
+	target.Inventory.URLs = []*crawler.DiscoveredURL{
+		{URL: srv.URL + "/foo.js", Source: "html", Depth: 1, ResponseStatus: 200, BodyHash: "x"},
+	}
+
+	ck := &BackupsCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected at least 1 finding for similar content, got 0")
+	}
+	f := findings[0]
+	if f.Confidence != "firm" {
+		t.Errorf("expected firm confidence, got %q", f.Confidence)
+	}
+	if f.Evidence == nil {
+		t.Fatal("expected evidence, got nil")
+	}
+	if f.Evidence.JaccardScore < 0.5 || f.Evidence.JaccardScore >= 1.0 {
+		t.Errorf("expected 0.5 <= JaccardScore < 1.0, got %f", f.Evidence.JaccardScore)
+	}
+}
+
+// TestBackupCheckUnrelatedContent verifies that when the .bak file has low
+// token overlap with the original (Jaccard < 0.5), no finding is emitted.
+func TestBackupCheckUnrelatedContent(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".bak") {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("<html><body><h1>Unexpected path</h1><p>This route does not exist.</p></body></html>"))
+			return
+		}
+		if r.URL.Path == "/foo.js" {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("var a = 1;"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.SeedURLs = []string{srv.URL}
+	target.Inventory.URLs = []*crawler.DiscoveredURL{
+		{URL: srv.URL + "/foo.js", Source: "html", Depth: 1, ResponseStatus: 200, BodyHash: "x"},
+	}
+
+	ck := &BackupsCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings for unrelated content (error page), got %d: %+v", len(findings), findings[0].Description)
+	}
+}
+
+// TestBackupCheckContentTypeMismatch verifies that a content-type mismatch
+// between the original and the .bak response is a hard skip, even when the
+// response body would otherwise be similar.
+func TestBackupCheckContentTypeMismatch(t *testing.T) {
+	const sharedBody = "var a = 1; var b = 2; var c = 3;"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".bak") {
+			w.Header().Set("Content-Type", "text/html") // mismatch
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(sharedBody))
+			return
+		}
+		if r.URL.Path == "/foo.js" {
+			w.Header().Set("Content-Type", "application/javascript") // original type
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(sharedBody))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.SeedURLs = []string{srv.URL}
+	target.Inventory.URLs = []*crawler.DiscoveredURL{
+		{URL: srv.URL + "/foo.js", Source: "html", Depth: 1, ResponseStatus: 200, BodyHash: "x"},
+	}
+
+	ck := &BackupsCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings for content-type mismatch, got %d", len(findings))
+	}
+}
+
+// TestBackupCheck403StillEmits verifies that a 403 response on the .bak variant
+// emits a firm finding without requiring content verification.
+func TestBackupCheck403StillEmits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".bak") {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.SeedURLs = []string{srv.URL}
+	target.Inventory.URLs = []*crawler.DiscoveredURL{
+		{URL: srv.URL + "/deploy.sh", Source: "html", Depth: 1, ResponseStatus: 200, BodyHash: "abc"},
+	}
+
+	ck := &BackupsCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected a finding for 403 on .bak, got 0")
+	}
+	if findings[0].Confidence != "firm" {
+		t.Errorf("expected firm confidence for 403, got %q", findings[0].Confidence)
+	}
+}
+
+// TestBackupCheckOriginalCached verifies that probing four backup suffixes for
+// the same original URL results in exactly one GET to the original URL. The
+// backup suffix probes may use any number of requests, but the original must be
+// fetched only once (cached on first fetch).
+func TestBackupCheckOriginalCached(t *testing.T) {
+	const origBody = "SELECT * FROM users;"
+	var origFetches int32
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".bak") ||
+			strings.HasSuffix(r.URL.Path, ".old") ||
+			strings.HasSuffix(r.URL.Path, ".orig") ||
+			strings.HasSuffix(r.URL.Path, ".swp") {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(origBody))
+			return
+		}
+		// Original URL
+		atomic.AddInt32(&origFetches, 1)
+		w.Header().Set("Content-Type", "text/plain")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(origBody))
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.SeedURLs = []string{srv.URL}
+	target.Inventory.URLs = []*crawler.DiscoveredURL{
+		{URL: srv.URL + "/query.sql", Source: "html", Depth: 1, ResponseStatus: 200, BodyHash: "x"},
+	}
+
+	ck := &BackupsCheck{}
+	if _, err := ck.Run(context.Background(), target); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if got := int(atomic.LoadInt32(&origFetches)); got != 1 {
+		t.Errorf("expected exactly 1 GET to original URL, got %d", got)
 	}
 }
