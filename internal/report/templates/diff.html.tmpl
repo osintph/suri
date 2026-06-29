@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Suri Diff Report</title>
+<style>
+*,*::before,*::after{box-sizing:border-box}
+body{font-family:ui-sans-serif,system-ui,sans-serif;font-size:14px;line-height:1.5;color:#1a1a1a;background:#f4f4f5;margin:0;padding:24px}
+.container{max-width:1100px;margin:0 auto}
+h1{font-size:22px;margin:0 0 4px}
+h2{font-size:17px;margin:32px 0 12px;color:#374151;border-bottom:1px solid #e5e7eb;padding-bottom:6px}
+table{width:100%;border-collapse:collapse;background:white;border-radius:6px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.1);margin-bottom:16px}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid #e5e7eb}
+th{background:#f9fafb;font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:#6b7280}
+.card{background:white;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.1);margin:12px 0;overflow:hidden}
+.card-header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid #e5e7eb}
+.card-header h3{margin:0;font-size:15px;flex:1;word-break:break-word}
+.card-body{padding:14px 16px}
+.badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:12px;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap}
+.badge-critical{background:#fce7f3;color:#9d174d}
+.badge-high{background:#fee2e2;color:#991b1b}
+.badge-medium{background:#fef3c7;color:#92400e}
+.badge-low{background:#dbeafe;color:#1e40af}
+.badge-info{background:#f3f4f6;color:#374151}
+.badge-confirmed{background:#d1fae5;color:#065f46}
+.badge-firm{background:#e0f2fe;color:#0369a1}
+.badge-tentative{background:#fef9c3;color:#854d0e}
+.border-critical{border-left:4px solid #db2777}
+.border-high{border-left:4px solid #dc2626}
+.border-medium{border-left:4px solid #d97706}
+.border-low{border-left:4px solid #2563eb}
+.border-info{border-left:4px solid #9ca3af}
+.scan-pair{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:24px}
+.scan-box{background:white;padding:12px 16px;border-radius:6px;box-shadow:0 1px 3px rgba(0,0,0,.1)}
+.scan-box-label{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af;margin-bottom:4px}
+.scan-id{font-family:ui-monospace,monospace;font-size:12px;color:#111827;word-break:break-all}
+dl{display:grid;grid-template-columns:110px 1fr;gap:3px 10px;margin:0}
+dt{font-weight:600;color:#6b7280;font-size:12px;padding-top:2px}
+dd{margin:0;word-break:break-all;font-size:13px}
+pre{background:#1e1e2e;color:#cdd6f4;border-radius:4px;padding:12px;overflow-x:auto;font-size:12px;margin:6px 0;white-space:pre-wrap;word-break:break-all}
+.sec-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:#9ca3af;margin:14px 0 4px}
+.trunc-note{font-size:11px;color:#9ca3af;font-style:italic;margin:2px 0 8px}
+.curl-box{background:#0f172a;color:#7dd3fc;border-radius:4px;padding:10px 12px;font-family:ui-monospace,monospace;font-size:12px;word-break:break-all;margin:4px 0 8px}
+.section-new{border-left:4px solid #16a34a;padding-left:12px}
+.section-persistent{border-left:4px solid #2563eb;padding-left:12px}
+.section-resolved{border-left:4px solid #9ca3af;padding-left:12px}
+footer{margin-top:48px;padding-top:16px;border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>Scan Diff Report</h1>
+
+<div class="scan-pair">
+<div class="scan-box"><div class="scan-box-label">Baseline</div><div class="scan-id">{{.BaselineScan.ScanID}}</div><div style="color:#6b7280;font-size:12px;margin-top:2px">{{.BaselineScan.StartTime}}</div></div>
+<div class="scan-box"><div class="scan-box-label">Current</div><div class="scan-id">{{.CurrentScan.ScanID}}</div><div style="color:#6b7280;font-size:12px;margin-top:2px">{{.CurrentScan.StartTime}}</div></div>
+</div>
+
+<h2>Summary</h2>
+<table>
+<thead><tr><th>Category</th><th>Count</th></tr></thead>
+<tbody>
+<tr><td><span style="color:#16a34a;font-weight:600">New</span></td><td>{{.Summary.NewCount}}</td></tr>
+<tr><td><span style="color:#2563eb;font-weight:600">Persistent</span></td><td>{{.Summary.PersistentCount}}</td></tr>
+<tr><td><span style="color:#6b7280;font-weight:600">Resolved</span></td><td>{{.Summary.ResolvedCount}}</td></tr>
+</tbody>
+</table>
+
+{{define "findingCard"}}
+<div class="card border-{{.SeverityClass}}">
+<div class="card-header">
+<span class="badge badge-{{.SeverityClass}}">{{.Severity}}</span>
+<h3>{{.Title}}</h3>
+{{if .Confidence}}<span class="badge badge-{{.Confidence}}">{{.Confidence}}</span>{{end}}
+</div>
+<div class="card-body">
+<dl>
+<dt>URL</dt><dd><code>{{.URL}}</code></dd>
+{{if .Parameter}}<dt>Parameter</dt><dd><code>{{.Parameter}}</code></dd>{{end}}
+{{if .CWE}}<dt>CWE</dt><dd>{{.CWE}}</dd>{{end}}
+{{if .OWASP}}<dt>OWASP</dt><dd>{{.OWASP}}</dd>{{end}}
+</dl>
+{{if .Description}}<div class="sec-label">Description</div><p style="margin:0 0 8px">{{.Description}}</p>{{end}}
+{{if .CurlCmd}}<div class="sec-label">Reproduction</div><div class="curl-box">{{.CurlCmd}}</div>{{end}}
+{{if .HasEvidence}}
+{{if .ResponseDisplay}}<div class="sec-label">Response{{if .ResponseStatus}} (HTTP {{.ResponseStatus}}){{end}}</div><pre>{{.ResponseDisplay}}</pre>{{if .RespTruncated}}<div class="trunc-note">truncated at 4 KB</div>{{end}}{{end}}
+{{if .RequestDisplay}}<div class="sec-label">Request</div><pre>{{.RequestDisplay}}</pre>{{if .ReqTruncated}}<div class="trunc-note">truncated at 4 KB</div>{{end}}{{end}}
+{{if .ResponseTimeMs}}<div class="sec-label">Response Time</div><p style="margin:0 0 8px">{{.ResponseTimeMs}} ms</p>{{end}}
+{{end}}
+</div>
+</div>
+{{end}}
+
+{{if .New}}
+<div class="section-new">
+<h2 style="border-color:#16a34a;color:#16a34a">New Findings ({{len .New}})</h2>
+{{range .New}}{{template "findingCard" .}}{{end}}
+</div>
+{{end}}
+
+{{if .Persistent}}
+<div class="section-persistent">
+<h2 style="border-color:#2563eb;color:#2563eb">Persistent Findings ({{len .Persistent}})</h2>
+{{range .Persistent}}{{template "findingCard" .}}{{end}}
+</div>
+{{end}}
+
+{{if .Resolved}}
+<div class="section-resolved">
+<h2 style="border-color:#6b7280;color:#6b7280">Resolved Findings ({{len .Resolved}})</h2>
+{{range .Resolved}}{{template "findingCard" .}}{{end}}
+</div>
+{{end}}
+
+<footer>Generated by Suri {{.SuriVersion}} on {{.GeneratedAt}}</footer>
+</div>
+</body>
+</html>

@@ -36,6 +36,7 @@ import (
 	"github.com/osintph/suri/internal/crawler"
 	internalhttp "github.com/osintph/suri/internal/http"
 	"github.com/osintph/suri/internal/scope"
+	"github.com/osintph/suri/internal/report"
 	"github.com/osintph/suri/internal/store"
 	"github.com/osintph/suri/internal/wordlists"
 )
@@ -54,8 +55,8 @@ func main() {
 
 	root.AddCommand(
 		newScanCmd(),
-		newStubCmd("report", "Report generation is not yet implemented."),
-		newStubCmd("diff", "Diff engine is not yet implemented."),
+		newReportCmd(),
+		newDiffCmd(),
 		newWordlistsCmd(),
 	)
 
@@ -72,6 +73,131 @@ func newStubCmd(name, msg string) *cobra.Command {
 			fmt.Fprintln(os.Stderr, msg)
 		},
 	}
+}
+
+func newReportCmd() *cobra.Command {
+	var (
+		scanID  string
+		format  string
+		outPath string
+		dbPath  string
+	)
+	cmd := &cobra.Command{
+		Use:   "report",
+		Short: "Generate a report from a scan",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedDB := dbPath
+			if resolvedDB == "" {
+				var err error
+				resolvedDB, err = store.FindLatestDB(".")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: %v\n", err)
+					os.Exit(1)
+				}
+			}
+			st, err := store.Open(resolvedDB)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: cannot open database: %v\n", err)
+				os.Exit(1)
+			}
+			defer st.Close()
+
+			f, err := os.Create(outPath)
+			if err != nil {
+				return fmt.Errorf("creating output file: %w", err)
+			}
+			defer f.Close()
+
+			ctx := cmd.Context()
+			switch format {
+			case "html":
+				if err := report.RenderHTML(ctx, st, scanID, Version, f); err != nil {
+					return fmt.Errorf("rendering HTML report: %w", err)
+				}
+			case "json":
+				if err := report.RenderJSON(ctx, st, scanID, f); err != nil {
+					return fmt.Errorf("rendering JSON report: %w", err)
+				}
+			default:
+				return fmt.Errorf("unsupported format %q (use html or json)", format)
+			}
+
+			fmt.Printf("report written to %s\n", outPath)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&scanID, "scan", "", "scan ID to report on (required)")
+	_ = cmd.MarkFlagRequired("scan")
+	cmd.Flags().StringVar(&format, "format", "", "output format: html or json (required)")
+	_ = cmd.MarkFlagRequired("format")
+	cmd.Flags().StringVar(&outPath, "out", "", "output file path (required)")
+	_ = cmd.MarkFlagRequired("out")
+	cmd.Flags().StringVar(&dbPath, "db", "", "path to findings database (default: most recent .db in current directory)")
+	return cmd
+}
+
+func newDiffCmd() *cobra.Command {
+	var (
+		baselineID string
+		currentID  string
+		format     string
+		outPath    string
+		dbPath     string
+	)
+	cmd := &cobra.Command{
+		Use:   "diff",
+		Short: "Compare two scans and report new, persistent, and resolved findings",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			resolvedDB := dbPath
+			if resolvedDB == "" {
+				var err error
+				resolvedDB, err = store.FindLatestDB(".")
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "error: %v\n", err)
+					os.Exit(1)
+				}
+			}
+			st, err := store.Open(resolvedDB)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "error: cannot open database: %v\n", err)
+				os.Exit(1)
+			}
+			defer st.Close()
+
+			f, err := os.Create(outPath)
+			if err != nil {
+				return fmt.Errorf("creating output file: %w", err)
+			}
+			defer f.Close()
+
+			ctx := cmd.Context()
+			switch format {
+			case "html":
+				if err := report.RenderDiffHTML(ctx, st, baselineID, currentID, Version, f); err != nil {
+					return fmt.Errorf("rendering HTML diff: %w", err)
+				}
+			case "json":
+				if err := report.RenderDiffJSON(ctx, st, baselineID, currentID, f); err != nil {
+					return fmt.Errorf("rendering JSON diff: %w", err)
+				}
+			default:
+				return fmt.Errorf("unsupported format %q (use html or json)", format)
+			}
+
+			fmt.Printf("diff written to %s\n", outPath)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&baselineID, "baseline", "", "baseline scan ID (required)")
+	_ = cmd.MarkFlagRequired("baseline")
+	cmd.Flags().StringVar(&currentID, "current", "", "current scan ID (required)")
+	_ = cmd.MarkFlagRequired("current")
+	cmd.Flags().StringVar(&format, "format", "", "output format: html or json (required)")
+	_ = cmd.MarkFlagRequired("format")
+	cmd.Flags().StringVar(&outPath, "out", "", "output file path (required)")
+	_ = cmd.MarkFlagRequired("out")
+	cmd.Flags().StringVar(&dbPath, "db", "", "path to findings database (default: most recent .db in current directory)")
+	return cmd
 }
 
 func newWordlistsCmd() *cobra.Command {
