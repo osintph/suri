@@ -25,10 +25,6 @@ import (
 	"github.com/osintph/suri/internal/checks"
 )
 
-// azureEndpointNote is the Target.Notes key for overriding the Azure base URL
-// in tests. When set, probe URLs are built as {value}/{account}/{container}?...
-const azureEndpointNote = "_azure_endpoint"
-
 // azureContainers is the list of common container names probed during active
 // permutation. Passive probing uses the container extracted from the artifact.
 var azureContainers = []string{
@@ -36,11 +32,16 @@ var azureContainers = []string{
 	"data", "uploads", "files", "media",
 }
 
-// AzureCheck probes Azure Blob Storage containers for anonymous list access.
-type AzureCheck struct{}
+// AzureCheck probes Azure Blob Storage containers (or Azure Blob-compatible
+// endpoints) for anonymous list access. When Endpoint is empty, the standard
+// Azure endpoint format is used. When Endpoint is set, path-style addressing
+// against the custom endpoint is used.
+type AzureCheck struct {
+	Endpoint string
+}
 
-func (c *AzureCheck) ID() string       { return "cloud.azure.public-container" }
-func (c *AzureCheck) Name() string     { return "Azure Blob Container Public List" }
+func (c *AzureCheck) ID() string                { return "cloud.azure.public-container" }
+func (c *AzureCheck) Name() string              { return "Azure Blob Container Public List" }
 func (c *AzureCheck) Severity() checks.Severity { return checks.SeverityHigh }
 func (c *AzureCheck) Category() checks.Category { return checks.CategoryCloud }
 
@@ -48,15 +49,19 @@ func (c *AzureCheck) Category() checks.Category { return checks.CategoryCloud }
 // azure-blob artifacts from the crawl inventory; active permutation derives
 // account names from the engagement domain.
 func (c *AzureCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
-	if !target.Scope.HasAzureAuthorisation() {
-		slog.Info("cloud.azure: azure probing not authorised in scope, skipping",
-			"hint", "add *.blob.core.windows.net to cloud_buckets in scope file")
-		return nil, nil
-	}
-
-	override := ""
-	if target.Notes != nil {
-		override = target.Notes[azureEndpointNote]
+	if c.Endpoint != "" {
+		if !target.Scope.HasCustomEndpointAuthorisation(c.Endpoint) {
+			slog.Info("cloud.azure: custom endpoint not authorised in scope, skipping",
+				"endpoint", c.Endpoint,
+				"hint", "add the endpoint host to cloud_buckets in scope file")
+			return nil, nil
+		}
+	} else {
+		if !target.Scope.HasAzureAuthorisation() {
+			slog.Info("cloud.azure: azure probing not authorised in scope, skipping",
+				"hint", "add *.blob.core.windows.net to cloud_buckets in scope file")
+			return nil, nil
+		}
 	}
 
 	var candidates []string
@@ -66,7 +71,7 @@ func (c *AzureCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 		if a.Type == "azure-blob" {
 			account, container := azureParseArtifact(a.Value)
 			if account != "" && container != "" {
-				candidates = append(candidates, azureListURL(account, container, override))
+				candidates = append(candidates, c.listURL(account, container))
 			}
 		}
 	}
@@ -76,7 +81,7 @@ func (c *AzureCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 		stem := DomainStem(target.Domain)
 		for _, name := range Names(stem) {
 			for _, container := range azureContainers {
-				candidates = append(candidates, azureListURL(name, container, override))
+				candidates = append(candidates, c.listURL(name, container))
 			}
 		}
 	}
@@ -84,12 +89,12 @@ func (c *AzureCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 	return probeAll(ctx, target, candidates, detectAzurePublicContainer, c.ID())
 }
 
-// azureListURL builds the Azure container listing URL. Uses the override
-// endpoint when set (for tests).
-func azureListURL(account, container, override string) string {
+// listURL builds the Azure container listing URL. Uses path-style against the
+// custom endpoint when set; otherwise uses the standard Azure virtual-hosted URL.
+func (c *AzureCheck) listURL(account, container string) string {
 	const suffix = "?restype=container&comp=list"
-	if override != "" {
-		return override + "/" + account + "/" + container + suffix
+	if c.Endpoint != "" {
+		return strings.TrimRight(c.Endpoint, "/") + "/" + account + "/" + container + suffix
 	}
 	return "https://" + account + ".blob.core.windows.net/" + container + suffix
 }

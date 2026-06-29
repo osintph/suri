@@ -37,6 +37,27 @@ suri --help
 
 See `examples/scope.toml` for scope file format and `examples/config.toml` for operator config.
 
+## Testing against S3-compatible storage (Minio, Backblaze, etc)
+
+Cloud checks support any S3-compatible endpoint via `--s3-endpoint`. The endpoint
+host must appear in the scope file's `cloud_buckets` list to satisfy the
+authorisation gate.
+
+Example using a local Minio server (`examples/scope-minio-local.toml` pre-configures
+`localhost` and `127.0.0.1` in `cloud_buckets`):
+
+```bash
+./suri scan \
+  --scope examples/scope-minio-local.toml \
+  --s3-endpoint http://localhost:9000 \
+  --domain osintph-suri-test \
+  http://localhost:3000
+```
+
+The `--s3-endpoint` flag overrides the `s3_endpoint` field in the scope file.
+Equivalent flags exist for Azure Blob-compatible storage (`--azure-endpoint`) and
+GCS-compatible storage (`--gcs-endpoint`).
+
 ## Wordlists
 
 See [WORDLISTS.md](WORDLISTS.md) for attribution and licensing of embedded wordlists.

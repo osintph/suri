@@ -30,32 +30,37 @@ import (
 	"github.com/osintph/suri/internal/checks"
 )
 
-// s3EndpointNote is the Target.Notes key for overriding the S3 base URL in
-// tests. When set, probe URLs are built as {value}/{bucket}?list-type=2
-// instead of the real https://{bucket}.s3.amazonaws.com format.
-const s3EndpointNote = "_s3_endpoint"
+// S3Check probes AWS S3 buckets (or S3-compatible endpoints such as Minio)
+// for anonymous list access. When Endpoint is empty, virtual-hosted-style AWS
+// URLs are used. When Endpoint is set, path-style URLs against the custom
+// endpoint are used and PathStyle must be true.
+type S3Check struct {
+	Endpoint  string
+	PathStyle bool
+}
 
-// S3Check probes AWS S3 buckets for anonymous list access.
-type S3Check struct{}
-
-func (c *S3Check) ID() string       { return "cloud.s3.public-list" }
-func (c *S3Check) Name() string     { return "S3 Bucket Public List" }
-func (c *S3Check) Severity() checks.Severity { return checks.SeverityHigh }
-func (c *S3Check) Category() checks.Category { return checks.CategoryCloud }
+func (c *S3Check) ID() string                   { return "cloud.s3.public-list" }
+func (c *S3Check) Name() string                 { return "S3 Bucket Public List" }
+func (c *S3Check) Severity() checks.Severity    { return checks.SeverityHigh }
+func (c *S3Check) Category() checks.Category    { return checks.CategoryCloud }
 
 // Run probes candidate S3 buckets. It combines passive extraction from JS
 // artifacts already in the inventory with active permutation from the target
-// domain. Returns nil, nil without probing if S3 probing is not authorised.
+// domain. Returns nil, nil without probing if the endpoint is not authorised.
 func (c *S3Check) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
-	if !target.Scope.HasS3Authorisation() {
-		slog.Info("cloud.s3: s3 probing not authorised in scope, skipping",
-			"hint", "add *.s3.amazonaws.com or similar to cloud_buckets in scope file")
-		return nil, nil
-	}
-
-	override := ""
-	if target.Notes != nil {
-		override = target.Notes[s3EndpointNote]
+	if c.Endpoint != "" {
+		if !target.Scope.HasCustomEndpointAuthorisation(c.Endpoint) {
+			slog.Info("cloud.s3: custom endpoint not authorised in scope, skipping",
+				"endpoint", c.Endpoint,
+				"hint", "add the endpoint host to cloud_buckets in scope file")
+			return nil, nil
+		}
+	} else {
+		if !target.Scope.HasS3Authorisation() {
+			slog.Info("cloud.s3: s3 probing not authorised in scope, skipping",
+				"hint", "add *.s3.amazonaws.com or similar to cloud_buckets in scope file")
+			return nil, nil
+		}
 	}
 
 	var candidates []string
@@ -63,7 +68,9 @@ func (c *S3Check) Run(ctx context.Context, target *checks.Target) ([]*checks.Fin
 	// Passive: JS artifacts of type "s3" extracted during crawl.
 	for _, a := range target.Inventory.JSArtifacts {
 		if a.Type == "s3" {
-			candidates = append(candidates, s3ListURL(a.Value, override))
+			if u := c.artifactListURL(a.Value); u != "" {
+				candidates = append(candidates, u)
+			}
 		}
 	}
 
@@ -71,31 +78,62 @@ func (c *S3Check) Run(ctx context.Context, target *checks.Target) ([]*checks.Fin
 	if target.Domain != "" {
 		stem := DomainStem(target.Domain)
 		for _, name := range Names(stem) {
-			candidates = append(candidates, s3ListURL(s3BucketBase(name, override), override))
+			candidates = append(candidates, c.bucketListURL(name))
 		}
 	}
 
 	return probeAll(ctx, target, candidates, detectS3PublicList, c.ID())
 }
 
-// s3BucketBase returns the base URL for an S3 bucket name, using the override
-// endpoint when set (for tests) or the real global S3 endpoint.
-func s3BucketBase(bucket, override string) string {
-	if override != "" {
-		return override + "/" + bucket
+// bucketListURL returns the S3 listing URL for a named bucket.
+// Virtual-hosted style is used when PathStyle is false (AWS standard);
+// path-style is used when PathStyle is true (custom endpoints such as Minio).
+func (c *S3Check) bucketListURL(bucket string) string {
+	if c.PathStyle {
+		return strings.TrimRight(c.Endpoint, "/") + "/" + bucket + "/?list-type=2"
 	}
-	return "https://" + bucket + ".s3.amazonaws.com"
+	return "https://" + bucket + ".s3.amazonaws.com/?list-type=2"
 }
 
-// s3ListURL converts a bucket base URL or artifact value to a ListObjectsV2
-// URL. For test overrides, the endpoint already contains the path prefix.
-func s3ListURL(base, override string) string {
-	if override != "" && strings.HasPrefix(base, override) {
-		return base + "?list-type=2"
+// artifactListURL converts a passive S3 artifact value to a listing probe URL.
+// Path-style: extracts the bucket from the first path segment of the artifact
+// URL and builds against the configured endpoint.
+// Virtual-hosted: strips the artifact path to get the bucket root.
+func (c *S3Check) artifactListURL(artifactValue string) string {
+	if c.PathStyle {
+		bucket := s3BucketFromPath(artifactValue)
+		if bucket == "" {
+			return ""
+		}
+		return strings.TrimRight(c.Endpoint, "/") + "/" + bucket + "/?list-type=2"
 	}
-	// Real URL: strip any path from the artifact URL to get the bucket root.
-	u := bucketRoot(base)
-	return u + "?list-type=2"
+	root := bucketRoot(artifactValue)
+	if root == "" {
+		return ""
+	}
+	return root + "?list-type=2"
+}
+
+// s3BucketFromPath extracts the bucket name from a path-style URL, where the
+// bucket is the first path segment after the host (e.g. http://host/bucket/key).
+func s3BucketFromPath(rawURL string) string {
+	idx := strings.Index(rawURL, "://")
+	if idx < 0 {
+		return ""
+	}
+	after := rawURL[idx+3:]
+	slash1 := strings.Index(after, "/")
+	if slash1 < 0 {
+		return ""
+	}
+	rest := after[slash1+1:]
+	if rest == "" {
+		return ""
+	}
+	if slash2 := strings.Index(rest, "/"); slash2 >= 0 {
+		return rest[:slash2]
+	}
+	return rest
 }
 
 // detectS3PublicList returns true when the response indicates a publicly
@@ -105,23 +143,16 @@ func detectS3PublicList(status int, body []byte) bool {
 }
 
 // S3AcceleratedCheck probes the S3 Transfer Acceleration endpoint.
+// This check is AWS-specific and does not support custom endpoints.
 type S3AcceleratedCheck struct{}
 
-func (c *S3AcceleratedCheck) ID() string       { return "cloud.s3.accelerated-public-list" }
-func (c *S3AcceleratedCheck) Name() string     { return "S3 Accelerated Bucket Public List" }
+func (c *S3AcceleratedCheck) ID() string                { return "cloud.s3.accelerated-public-list" }
+func (c *S3AcceleratedCheck) Name() string              { return "S3 Accelerated Bucket Public List" }
 func (c *S3AcceleratedCheck) Severity() checks.Severity { return checks.SeverityHigh }
 func (c *S3AcceleratedCheck) Category() checks.Category { return checks.CategoryCloud }
 
 func (c *S3AcceleratedCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
 	if !target.Scope.HasS3Authorisation() {
-		return nil, nil
-	}
-	override := ""
-	if target.Notes != nil {
-		override = target.Notes[s3EndpointNote]
-	}
-	if override != "" {
-		// Accelerated endpoint not meaningful in tests; skip.
 		return nil, nil
 	}
 	var candidates []string

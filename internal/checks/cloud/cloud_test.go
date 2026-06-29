@@ -71,11 +71,10 @@ func TestS3CheckPublicList(t *testing.T) {
 	defer srv.Close()
 
 	sc := testScope()
-	target := testTarget(sc, srv, map[string]string{s3EndpointNote: srv.URL})
-	// Small domain so permutation produces a single test bucket.
+	target := testTarget(sc, srv, nil)
 	target.Domain = "example.com"
 
-	findings, err := (&S3Check{}).Run(context.Background(), target)
+	findings, err := (&S3Check{Endpoint: srv.URL, PathStyle: true}).Run(context.Background(), target)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -103,9 +102,9 @@ func TestS3CheckNotPublic(t *testing.T) {
 	defer srv.Close()
 
 	sc := testScope()
-	target := testTarget(sc, srv, map[string]string{s3EndpointNote: srv.URL})
+	target := testTarget(sc, srv, nil)
 
-	findings, err := (&S3Check{}).Run(context.Background(), target)
+	findings, err := (&S3Check{Endpoint: srv.URL, PathStyle: true}).Run(context.Background(), target)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -161,15 +160,57 @@ func TestS3CheckPassiveArtifact(t *testing.T) {
 		Scope:       sc,
 		HTTP:        internalhttp.New(sc),
 		Concurrency: 2,
-		Notes:       map[string]string{s3EndpointNote: srv.URL},
 	}
 
-	findings, err := (&S3Check{}).Run(context.Background(), target)
+	findings, err := (&S3Check{Endpoint: srv.URL, PathStyle: true}).Run(context.Background(), target)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(findings) == 0 {
 		t.Fatal("expected finding from passive S3 artifact probing")
+	}
+}
+
+// TestS3BucketListURLs verifies that S3Check generates the correct URL style
+// for both the default AWS mode and the custom endpoint path-style mode.
+func TestS3BucketListURLs(t *testing.T) {
+	// Default (no endpoint): virtual-hosted AWS style.
+	c := &S3Check{}
+	got := c.bucketListURL("my-app")
+	want := "https://my-app.s3.amazonaws.com/?list-type=2"
+	if got != want {
+		t.Errorf("virtual-hosted URL: got %q, want %q", got, want)
+	}
+
+	// Custom endpoint: path-style.
+	c2 := &S3Check{Endpoint: "http://localhost:9000", PathStyle: true}
+	got2 := c2.bucketListURL("my-app")
+	want2 := "http://localhost:9000/my-app/?list-type=2"
+	if got2 != want2 {
+		t.Errorf("path-style URL: got %q, want %q", got2, want2)
+	}
+}
+
+// TestS3CheckCustomEndpointNotAuthorised verifies that when a custom endpoint
+// host is not listed in cloud_buckets, the check skips without probing.
+func TestS3CheckCustomEndpointNotAuthorised(t *testing.T) {
+	// Scope authorises AWS S3 but not localhost.
+	sc := &scope.Scope{
+		CloudBuckets: []string{"*.s3.amazonaws.com"},
+	}
+	target := &checks.Target{
+		Inventory:   &crawler.Inventory{},
+		Scope:       sc,
+		HTTP:        internalhttp.New(sc),
+		Concurrency: 2,
+	}
+	check := &S3Check{Endpoint: "http://localhost:9000", PathStyle: true}
+	findings, err := check.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings when endpoint host not in cloud_buckets, got %d", len(findings))
 	}
 }
 
@@ -189,9 +230,9 @@ func TestAzureCheckPublicContainer(t *testing.T) {
 	defer srv.Close()
 
 	sc := testScope()
-	target := testTarget(sc, srv, map[string]string{azureEndpointNote: srv.URL})
+	target := testTarget(sc, srv, nil)
 
-	findings, err := (&AzureCheck{}).Run(context.Background(), target)
+	findings, err := (&AzureCheck{Endpoint: srv.URL}).Run(context.Background(), target)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -236,9 +277,9 @@ func TestGCSCheckPublicBucket(t *testing.T) {
 	defer srv.Close()
 
 	sc := testScope()
-	target := testTarget(sc, srv, map[string]string{gcsEndpointNote: srv.URL})
+	target := testTarget(sc, srv, nil)
 
-	findings, err := (&GCSCheck{}).Run(context.Background(), target)
+	findings, err := (&GCSCheck{Endpoint: srv.URL}).Run(context.Background(), target)
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -325,9 +366,9 @@ func TestBucketRoot(t *testing.T) {
 
 func TestAzureParseArtifact(t *testing.T) {
 	cases := []struct {
-		url       string
-		wantAcct  string
-		wantCont  string
+		url      string
+		wantAcct string
+		wantCont string
 	}{
 		{
 			"https://myaccount.blob.core.windows.net/mycontainer/blob",

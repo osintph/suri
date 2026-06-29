@@ -19,6 +19,7 @@ package scope
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"strings"
 
@@ -35,6 +36,9 @@ type scopeFile struct {
 	Ports              []int    `toml:"ports"`
 	WildcardsRecursive bool     `toml:"wildcards_recursive"`
 	CloudBuckets       []string `toml:"cloud_buckets"`
+	S3Endpoint         string   `toml:"s3_endpoint"`
+	AzureEndpoint      string   `toml:"azure_endpoint"`
+	GCSEndpoint        string   `toml:"gcs_endpoint"`
 }
 
 // Scope holds the parsed and validated engagement scope.
@@ -55,6 +59,14 @@ type Scope struct {
 	// Patterns use the same *.host syntax as Hostnames but a single * may span
 	// multiple labels (e.g. *.s3.*.amazonaws.com matches bucket.s3.us-east-1.amazonaws.com).
 	CloudBuckets []string
+	// S3Endpoint, AzureEndpoint, GCSEndpoint are optional base URLs for
+	// S3-compatible, Azure Blob-compatible, and GCS-compatible storage
+	// respectively. CLI flags (--s3-endpoint etc.) take precedence over these
+	// scope file values. When set, cloud checks use path-style addressing
+	// against the custom endpoint instead of provider-standard virtual-hosted URLs.
+	S3Endpoint    string
+	AzureEndpoint string
+	GCSEndpoint   string
 }
 
 // Load parses a TOML scope file and returns a validated Scope.
@@ -77,6 +89,9 @@ func Load(path string) (*Scope, error) {
 		Ports:              raw.Ports,
 		WildcardsRecursive: raw.WildcardsRecursive,
 		CloudBuckets:       raw.CloudBuckets,
+		S3Endpoint:         raw.S3Endpoint,
+		AzureEndpoint:      raw.AzureEndpoint,
+		GCSEndpoint:        raw.GCSEndpoint,
 	}
 
 	for _, cidrStr := range raw.CIDRs {
@@ -161,6 +176,18 @@ func (s *Scope) HasGCSAuthorisation() bool {
 // authorised for probing.
 func (s *Scope) HasCloudBuckets() bool {
 	return s.HasS3Authorisation() || s.HasAzureAuthorisation() || s.HasGCSAuthorisation()
+}
+
+// HasCustomEndpointAuthorisation reports whether the hostname of the given
+// endpoint URL is covered by this scope's cloud_buckets list. Use this when
+// a custom endpoint is configured (e.g. --s3-endpoint http://localhost:9000)
+// to verify that the operator has explicitly authorised probing of that host.
+func (s *Scope) HasCustomEndpointAuthorisation(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Hostname() == "" {
+		return false
+	}
+	return s.cloudBucketAllowed(normalize(u.Hostname()))
 }
 
 // anyCloudBucketAuthorised returns true if any of the sentinel hostnames is

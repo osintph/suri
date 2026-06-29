@@ -1,0 +1,18 @@
+# Example scope file for testing Suri cloud checks against a local Minio server.
+# Do not use this for real engagement scans.
+engagement_name = "minio-local-test"
+notes           = "Local Minio integration test. Not for real engagements."
+
+hostnames = ["localhost"]
+ips       = ["127.0.0.1"]
+
+# s3_endpoint pre-configures the Minio URL. The --s3-endpoint CLI flag takes
+# precedence over this value when both are supplied.
+s3_endpoint = "http://localhost:9000"
+
+# cloud_buckets must include the Minio host so that the S3 check is
+# authorised to probe it. Use localhost and 127.0.0.1 for a local server.
+cloud_buckets = [
+  "localhost",
+  "127.0.0.1",
+]

@@ -72,13 +72,16 @@ func newStubCmd(name, msg string) *cobra.Command {
 
 func newScanCmd() *cobra.Command {
 	var (
-		scopeFile string
-		dbPath    string
-		domain    string
-		maxDepth  int
-		maxURLs   int
-		threads   int
-		rate      float64
+		scopeFile     string
+		dbPath        string
+		domain        string
+		s3Endpoint    string
+		azureEndpoint string
+		gcsEndpoint   string
+		maxDepth      int
+		maxURLs       int
+		threads       int
+		rate          float64
 	)
 
 	cmd := &cobra.Command{
@@ -92,7 +95,8 @@ func newScanCmd() *cobra.Command {
 				Concurrency: threads,
 				RatePerHost: rate,
 			}
-			return runScan(cmd.Context(), scopeFile, args[0], dbPath, domain, threads, cfg)
+			return runScan(cmd.Context(), scopeFile, args[0], dbPath, domain,
+				s3Endpoint, azureEndpoint, gcsEndpoint, threads, cfg)
 		},
 	}
 
@@ -100,6 +104,9 @@ func newScanCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("scope")
 	cmd.Flags().StringVar(&dbPath, "db", "", "path for the findings database (default: <output_dir>/<scan-id>.db)")
 	cmd.Flags().StringVar(&domain, "domain", "", "primary domain of the engagement (used for cloud bucket permutation)")
+	cmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "custom S3-compatible endpoint URL, e.g. http://localhost:9000 for Minio (overrides s3_endpoint in scope file)")
+	cmd.Flags().StringVar(&azureEndpoint, "azure-endpoint", "", "custom Azure Blob-compatible endpoint URL (overrides azure_endpoint in scope file)")
+	cmd.Flags().StringVar(&gcsEndpoint, "gcs-endpoint", "", "custom GCS-compatible endpoint URL (overrides gcs_endpoint in scope file)")
 	cmd.Flags().IntVar(&maxDepth, "max-depth", 3, "maximum crawl depth")
 	cmd.Flags().IntVar(&maxURLs, "max-urls", 500, "maximum number of URLs to crawl")
 	cmd.Flags().IntVar(&threads, "threads", 10, "number of concurrent HTTP workers")
@@ -108,7 +115,13 @@ func newScanCmd() *cobra.Command {
 	return cmd
 }
 
-func runScan(ctx context.Context, scopePath, seedURL, dbFlag, domain string, threads int, crawlCfg crawler.Config) error {
+func runScan(
+	ctx context.Context,
+	scopePath, seedURL, dbFlag, domain string,
+	s3EndpointFlag, azureEndpointFlag, gcsEndpointFlag string,
+	threads int,
+	crawlCfg crawler.Config,
+) error {
 	conf := config.Default()
 
 	sc, err := scope.Load(scopePath)
@@ -121,6 +134,20 @@ func runScan(ctx context.Context, scopePath, seedURL, dbFlag, domain string, thr
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot read scope file: %v\n", err)
 		os.Exit(2)
+	}
+
+	// Resolve custom endpoints: CLI flag takes precedence over scope file value.
+	resolvedS3Endpoint := s3EndpointFlag
+	if resolvedS3Endpoint == "" {
+		resolvedS3Endpoint = sc.S3Endpoint
+	}
+	resolvedAzureEndpoint := azureEndpointFlag
+	if resolvedAzureEndpoint == "" {
+		resolvedAzureEndpoint = sc.AzureEndpoint
+	}
+	resolvedGCSEndpoint := gcsEndpointFlag
+	if resolvedGCSEndpoint == "" {
+		resolvedGCSEndpoint = sc.GCSEndpoint
 	}
 
 	// Generate a scan ID and resolve the database path.
@@ -182,12 +209,12 @@ func runScan(ctx context.Context, scopePath, seedURL, dbFlag, domain string, thr
 		}
 	}
 
-	// Run registered checks. Cloud checks run only if cloud_buckets is set in
-	// the scope file; they log a warning and skip otherwise.
+	// Run registered checks. Cloud checks run only if the endpoint is authorised
+	// in cloud_buckets; they log an info message and skip otherwise.
 	cloudChecks := []checks.Check{
-		&cloud.S3Check{},
-		&cloud.AzureCheck{},
-		&cloud.GCSCheck{},
+		&cloud.S3Check{Endpoint: resolvedS3Endpoint, PathStyle: resolvedS3Endpoint != ""},
+		&cloud.AzureCheck{Endpoint: resolvedAzureEndpoint},
+		&cloud.GCSCheck{Endpoint: resolvedGCSEndpoint},
 	}
 	checkTarget := &checks.Target{
 		Inventory:   inv,

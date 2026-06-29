@@ -25,16 +25,16 @@ import (
 	"github.com/osintph/suri/internal/checks"
 )
 
-// gcsEndpointNote is the Target.Notes key for overriding the GCS base URL in
-// tests. When set, probe URLs are built as {value}/{bucket}?prefix=&max-keys=10
-// instead of the real https://storage.googleapis.com/{bucket}?... format.
-const gcsEndpointNote = "_gcs_endpoint"
+// GCSCheck probes Google Cloud Storage buckets (or GCS-compatible endpoints)
+// for anonymous list access. When Endpoint is empty, the standard GCS endpoint
+// is used. When Endpoint is set, path-style addressing against the custom
+// endpoint is used.
+type GCSCheck struct {
+	Endpoint string
+}
 
-// GCSCheck probes Google Cloud Storage buckets for anonymous list access.
-type GCSCheck struct{}
-
-func (c *GCSCheck) ID() string       { return "cloud.gcs.public-bucket" }
-func (c *GCSCheck) Name() string     { return "GCS Bucket Public List" }
+func (c *GCSCheck) ID() string                { return "cloud.gcs.public-bucket" }
+func (c *GCSCheck) Name() string              { return "GCS Bucket Public List" }
 func (c *GCSCheck) Severity() checks.Severity { return checks.SeverityHigh }
 func (c *GCSCheck) Category() checks.Category { return checks.CategoryCloud }
 
@@ -42,15 +42,19 @@ func (c *GCSCheck) Category() checks.Category { return checks.CategoryCloud }
 // from the crawl inventory; active permutation derives bucket names from the
 // engagement domain.
 func (c *GCSCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
-	if !target.Scope.HasGCSAuthorisation() {
-		slog.Info("cloud.gcs: gcs probing not authorised in scope, skipping",
-			"hint", "add storage.googleapis.com or *.googleapis.com to cloud_buckets in scope file")
-		return nil, nil
-	}
-
-	override := ""
-	if target.Notes != nil {
-		override = target.Notes[gcsEndpointNote]
+	if c.Endpoint != "" {
+		if !target.Scope.HasCustomEndpointAuthorisation(c.Endpoint) {
+			slog.Info("cloud.gcs: custom endpoint not authorised in scope, skipping",
+				"endpoint", c.Endpoint,
+				"hint", "add the endpoint host to cloud_buckets in scope file")
+			return nil, nil
+		}
+	} else {
+		if !target.Scope.HasGCSAuthorisation() {
+			slog.Info("cloud.gcs: gcs probing not authorised in scope, skipping",
+				"hint", "add storage.googleapis.com or *.googleapis.com to cloud_buckets in scope file")
+			return nil, nil
+		}
 	}
 
 	var candidates []string
@@ -60,7 +64,7 @@ func (c *GCSCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Fi
 		if a.Type == "gcs" {
 			bucket := gcsParseBucket(a.Value)
 			if bucket != "" {
-				candidates = append(candidates, gcsListURL(bucket, override))
+				candidates = append(candidates, c.listURL(bucket))
 			}
 		}
 	}
@@ -69,26 +73,25 @@ func (c *GCSCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Fi
 	if target.Domain != "" {
 		stem := DomainStem(target.Domain)
 		for _, name := range Names(stem) {
-			candidates = append(candidates, gcsListURL(name, override))
+			candidates = append(candidates, c.listURL(name))
 		}
 	}
 
 	return probeAll(ctx, target, candidates, detectGCSPublicBucket, c.ID())
 }
 
-// gcsListURL builds the GCS bucket listing URL, using the override endpoint
-// for tests when set.
-func gcsListURL(bucket, override string) string {
+// listURL builds the GCS bucket listing URL. Uses path-style against the
+// custom endpoint when set; otherwise uses the standard GCS URL.
+func (c *GCSCheck) listURL(bucket string) string {
 	const suffix = "?prefix=&max-keys=10"
-	if override != "" {
-		return override + "/" + bucket + suffix
+	if c.Endpoint != "" {
+		return strings.TrimRight(c.Endpoint, "/") + "/" + bucket + suffix
 	}
 	return "https://storage.googleapis.com/" + bucket + suffix
 }
 
 // gcsParseBucket extracts the bucket name from a GCS URL such as
-// https://storage.googleapis.com/my-bucket/object or
-// gs://my-bucket/object.
+// https://storage.googleapis.com/my-bucket/object or gs://my-bucket/object.
 func gcsParseBucket(rawURL string) string {
 	// gs:// scheme: host is the bucket name.
 	if strings.HasPrefix(rawURL, "gs://") {
