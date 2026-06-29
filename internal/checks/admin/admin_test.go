@@ -220,8 +220,8 @@ func TestAdminCheckWordlistSource(t *testing.T) {
 	}
 }
 
-func TestNotFoundSigMatches(t *testing.T) {
-	sig := &notFoundSig{status: 200, bodyLen: 1000}
+func TestSoft200SigMatches(t *testing.T) {
+	sig := soft200Sig{status: 200, bodyLen: 1000}
 	cases := []struct {
 		status  int
 		bodyLen int
@@ -229,7 +229,7 @@ func TestNotFoundSigMatches(t *testing.T) {
 	}{
 		{200, 1000, true},  // exact match
 		{200, 1049, true},  // within 5%
-		{200, 1050, false}, // at the boundary (5% = 50, delta=50 > threshold of 50 when threshold=50)
+		{200, 1050, false}, // at the boundary (5% = 50, delta=50 is not < 50)
 		{200, 800, false},  // too different
 		{404, 1000, false}, // different status
 	}
@@ -238,6 +238,70 @@ func TestNotFoundSigMatches(t *testing.T) {
 		if got != tc.want {
 			t.Errorf("sig.matches(%d, %d) = %v, want %v", tc.status, tc.bodyLen, got, tc.want)
 		}
+	}
+}
+
+// TestAdminCheckMultiTemplateSoft200 verifies that a host with two distinct
+// soft-200 response templates (e.g. an Angular SPA at 9900 bytes and an Express
+// error page at 2400 bytes) suppresses false positives correctly.
+//
+// The UUID baseline probe seeds the cache with the first template (9900 bytes).
+// The first new template shape (2400 bytes) triggers a finding and is added to
+// the cache. Subsequent responses in either cached template are suppressed.
+func TestAdminCheckMultiTemplateSoft200(t *testing.T) {
+	const (
+		templateALen = 9900 // Angular SPA (baseline / UUID probe response)
+		templateBLen = 2400 // Express error page
+	)
+	templateA := strings.Repeat("a", templateALen)
+	templateB := strings.Repeat("b", templateBLen)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/" + notFoundProbePath:
+			// Baseline probe returns template A.
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(templateA))
+		case "/path-a-1":
+			// Same as baseline: should be suppressed.
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(templateA))
+		case "/path-b-1":
+			// First hit of template B: new template, emit finding, add to cache.
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(templateB))
+		case "/path-b-2":
+			// Second hit of template B: already in cache, suppress.
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(templateB))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte("not found"))
+		}
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	target.Concurrency = 1 // sequential so path order is deterministic
+
+	ck := &AdminCheck{
+		WordlistPath: miniWordlist(t, "/path-a-1", "/path-b-1", "/path-b-2"),
+	}
+
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// /path-a-1 matches the baseline (template A) → suppressed.
+	// /path-b-1 is a new template (template B) → finding emitted, added to cache.
+	// /path-b-2 matches template B (now cached) → suppressed.
+	// Expected: exactly 1 finding, for /path-b-1.
+	if len(findings) != 1 {
+		t.Fatalf("expected 1 finding (for /path-b-1), got %d: %v", len(findings), findings)
+	}
+	if !strings.Contains(findings[0].URL, "/path-b-1") {
+		t.Errorf("expected finding URL to contain /path-b-1, got %q", findings[0].URL)
 	}
 }
 

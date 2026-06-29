@@ -65,13 +65,15 @@ type operation struct {
 // any discovered API endpoints and parameters.
 type SwaggerCheck struct{}
 
-func (c *SwaggerCheck) ID() string                { return "api.openapi.found" }
-func (c *SwaggerCheck) Name() string              { return "OpenAPI Spec Found" }
-func (c *SwaggerCheck) Severity() checks.Severity { return checks.SeverityInfo }
+func (c *SwaggerCheck) ID() string                { return "api.openapi.spec-exposed" }
+func (c *SwaggerCheck) Name() string              { return "OpenAPI Specification Exposed" }
+func (c *SwaggerCheck) Severity() checks.Severity { return checks.SeverityMedium }
 func (c *SwaggerCheck) Category() checks.Category { return checks.CategoryAPI }
 
 // Run probes each swagger-paths.txt entry against all target origins.
-// If a spec is found, its endpoints are added to target.Inventory and a finding is recorded.
+// Every probed URL is recorded in the inventory regardless of outcome so the
+// operator can audit what was attempted by querying urls_discovered.
+// If a spec is found, its endpoints are also added to target.Inventory and a finding is recorded.
 func (c *SwaggerCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
 	wl, err := wordlists.Load(wordlists.SwaggerPaths, "")
 	if err != nil {
@@ -84,6 +86,7 @@ func (c *SwaggerCheck) Run(ctx context.Context, target *checks.Target) ([]*check
 		return nil, nil
 	}
 
+	wlSource := wl.Source.String()
 	var findings []*checks.Finding
 
 	for _, origin := range origins {
@@ -95,7 +98,17 @@ func (c *SwaggerCheck) Run(ctx context.Context, target *checks.Target) ([]*check
 			}
 
 			specURL := strings.TrimRight(origin, "/") + "/" + strings.TrimLeft(path, "/")
-			f := probeSwaggerPath(ctx, target, specURL)
+
+			// Record every probed URL in the inventory for operator audit.
+			if target.Inventory != nil {
+				target.Inventory.URLs = append(target.Inventory.URLs, &crawler.DiscoveredURL{
+					URL:    specURL,
+					Source: "swagger-probe",
+					Depth:  0,
+				})
+			}
+
+			f := probeSwaggerPath(ctx, target, specURL, wlSource)
 			if f != nil {
 				findings = append(findings, f)
 			}
@@ -108,7 +121,7 @@ func (c *SwaggerCheck) Run(ctx context.Context, target *checks.Target) ([]*check
 
 // probeSwaggerPath fetches specURL and, if it looks like an OpenAPI spec,
 // inventories its endpoints and returns a finding.
-func probeSwaggerPath(ctx context.Context, target *checks.Target, specURL string) *checks.Finding {
+func probeSwaggerPath(ctx context.Context, target *checks.Target, specURL, wlSource string) *checks.Finding {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, specURL, nil)
 	if err != nil {
 		return nil
@@ -160,20 +173,22 @@ func probeSwaggerPath(ctx context.Context, target *checks.Target, specURL string
 	}
 
 	return &checks.Finding{
-		CheckID:  "api.openapi.found",
-		Severity: checks.SeverityInfo,
-		Title:    "OpenAPI specification accessible",
+		CheckID:  "api.openapi.spec-exposed",
+		Severity: checks.SeverityMedium,
+		Title:    "OpenAPI specification publicly accessible",
 		Description: fmt.Sprintf(
 			"OpenAPI/Swagger specification (version %s, title %q) found at %s with %d paths defined. Endpoints have been added to the scan inventory.",
 			specVersion, spec.Info.Title, specURL, pathCount,
 		),
 		URL:        specURL,
 		Confidence: checks.ConfidenceConfirmed,
+		CWE:        "CWE-200",
+		OWASP:      "A05:2021",
 		Evidence: &checks.Evidence{
 			ResponseStatus: http.StatusOK,
 			ResponseBytes:  evidence,
 		},
-		WordlistSource: "vendored:" + wordlists.SwaggerPaths,
+		WordlistSource: wlSource,
 	}
 }
 
@@ -186,7 +201,7 @@ func looksLikeOpenAPISpec(body []byte) bool {
 	if len(trimmed) == 0 || trimmed[0] != '{' {
 		return false
 	}
-	// Check for key indicators in the first 1 KB.
+	// Check for key indicators in the first 1 KB, then full body for "paths".
 	preview := string(body)
 	if len(preview) > 1024 {
 		preview = preview[:1024]

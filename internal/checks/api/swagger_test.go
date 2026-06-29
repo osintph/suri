@@ -102,11 +102,11 @@ func TestSwaggerCheckFindsSpec(t *testing.T) {
 	}
 
 	f := findings[0]
-	if f.CheckID != "api.openapi.found" {
-		t.Errorf("CheckID: want api.openapi.found, got %q", f.CheckID)
+	if f.CheckID != "api.openapi.spec-exposed" {
+		t.Errorf("CheckID: want api.openapi.spec-exposed, got %q", f.CheckID)
 	}
-	if f.Severity != checks.SeverityInfo {
-		t.Errorf("Severity: want info, got %q", f.Severity)
+	if f.Severity != checks.SeverityMedium {
+		t.Errorf("Severity: want medium, got %q", f.Severity)
 	}
 	if !strings.Contains(f.URL, "/swagger.json") {
 		t.Errorf("URL: expected /swagger.json in %q", f.URL)
@@ -136,22 +136,22 @@ func TestSwaggerCheckInventoriesEndpoints(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	// Inventory should have been populated with paths from the spec.
-	urlMap := make(map[string]bool)
+	// Build a map of spec-enumerated URLs (source == "swagger").
+	swaggerURLs := make(map[string]bool)
 	for _, u := range target.Inventory.URLs {
-		urlMap[u.URL] = true
-		if u.Source != "swagger" {
-			t.Errorf("URL source: want swagger, got %q for %s", u.Source, u.URL)
+		if u.Source == "swagger" {
+			swaggerURLs[u.URL] = true
 		}
 	}
-	if !urlMap[srv.URL+"/api/users"] {
-		t.Errorf("expected %s/api/users in inventory URLs", srv.URL)
+
+	if !swaggerURLs[srv.URL+"/api/users"] {
+		t.Errorf("expected %s/api/users in inventory with source swagger", srv.URL)
 	}
-	if !urlMap[srv.URL+"/api/products"] {
-		t.Errorf("expected %s/api/products in inventory URLs", srv.URL)
+	if !swaggerURLs[srv.URL+"/api/products"] {
+		t.Errorf("expected %s/api/products in inventory with source swagger", srv.URL)
 	}
 
-	// Parameters should be inventoried.
+	// Parameters extracted from the spec should be inventoried.
 	paramNames := make(map[string]bool)
 	for _, p := range target.Inventory.Parameters {
 		paramNames[p.Name] = true
@@ -206,6 +206,59 @@ func TestSwaggerCheckNoSpec(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected no findings, got %d", len(findings))
+	}
+
+	// Even with no spec found, every probed URL must appear in the inventory.
+	if len(target.Inventory.URLs) == 0 {
+		t.Error("expected probe URLs in inventory even when no spec was found")
+	}
+	for _, u := range target.Inventory.URLs {
+		if u.Source != "swagger-probe" {
+			t.Errorf("expected source swagger-probe for %s, got %q", u.URL, u.Source)
+		}
+	}
+}
+
+func TestSwaggerCheckRecordsProbeURLs(t *testing.T) {
+	// Server returns a valid spec only on /swagger.json; all other paths return 404.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/swagger.json" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(minimalSwaggerJSON))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := testAPITarget(srv)
+	ck := &SwaggerCheck{}
+
+	_, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// Probe URLs must be present for every wordlist entry, including those that returned 404.
+	probeURLs := make(map[string]bool)
+	for _, u := range target.Inventory.URLs {
+		if u.Source == "swagger-probe" {
+			probeURLs[u.URL] = true
+		}
+	}
+
+	// The probe for /swagger.json must appear even though it returned a spec.
+	if !probeURLs[srv.URL+"/swagger.json"] {
+		t.Errorf("expected %s/swagger.json recorded as swagger-probe in inventory", srv.URL)
+	}
+	// A path that returned 404 must also be recorded.
+	if !probeURLs[srv.URL+"/openapi.json"] {
+		t.Errorf("expected %s/openapi.json recorded as swagger-probe in inventory", srv.URL)
+	}
+	// There must be more than one probe entry.
+	if len(probeURLs) < 2 {
+		t.Errorf("expected multiple probe URLs in inventory, got %d", len(probeURLs))
 	}
 }
 

@@ -32,33 +32,82 @@ import (
 	"github.com/osintph/suri/internal/wordlists"
 )
 
-// notFoundSig records the response signature of a known-missing path.
-// Used to detect soft-404 responses (servers that return 200 for all paths).
-type notFoundSig struct {
+// notFoundProbePath is the fixed path used to establish a per-origin soft-200
+// baseline. It is deliberately long and random-looking to avoid matching real routes.
+const notFoundProbePath = "suri-probe-nonexistent-e3b0c442"
+
+// maxSigs is the maximum number of distinct soft-200 templates tracked per host.
+const maxSigs = 5
+
+// soft200Sig represents one distinct "not found" response template.
+// Servers that return HTTP 200 for every path (soft-404) produce a recognisable
+// signature of (status, body length). We track up to maxSigs per host.
+type soft200Sig struct {
 	status  int
 	bodyLen int
 }
 
 // matches returns true when the given status and body length are consistent
-// with the 404 signature, meaning the response is likely a soft-404.
-func (sig *notFoundSig) matches(status, bodyLen int) bool {
-	if sig == nil {
+// with this template, meaning the response is likely a soft-404.
+// Body length within 5% (minimum 10-byte floor) is treated as the same template.
+// Strictly less-than so that exactly 5% difference is treated as distinct.
+func (s soft200Sig) matches(status, bodyLen int) bool {
+	if status != s.status {
 		return false
 	}
-	if status != sig.status {
-		return false
-	}
-	// Body length within 5% (minimum 10-byte threshold to avoid false matches on tiny pages).
-	// Strictly less-than so that exactly 5% difference is treated as distinct.
-	delta := bodyLen - sig.bodyLen
+	delta := bodyLen - s.bodyLen
 	if delta < 0 {
 		delta = -delta
 	}
-	threshold := sig.bodyLen * 5 / 100
+	threshold := s.bodyLen * 5 / 100
 	if threshold < 10 {
 		threshold = 10
 	}
 	return delta < threshold
+}
+
+// hostCache tracks up to maxSigs distinct soft-200 templates per host.
+// All exported methods are safe for concurrent use.
+type hostCache struct {
+	mu   sync.Mutex
+	sigs []soft200Sig
+}
+
+// matchesAny reports whether the given response matches any cached template.
+// Must be called with mu held.
+func (c *hostCache) matchesAny(status, bodyLen int) bool {
+	for _, s := range c.sigs {
+		if s.matches(status, bodyLen) {
+			return true
+		}
+	}
+	return false
+}
+
+// tryAdd adds a new template to the cache if it is not already covered and
+// the cache has room. Must be called with mu held.
+func (c *hostCache) tryAdd(status, bodyLen int) {
+	if len(c.sigs) >= maxSigs {
+		return
+	}
+	if c.matchesAny(status, bodyLen) {
+		return
+	}
+	c.sigs = append(c.sigs, soft200Sig{status: status, bodyLen: bodyLen})
+}
+
+// soft200Check atomically tests whether the response is a known soft-200
+// template. If it is not, the new template is added to the cache and the
+// method returns false (caller should emit a finding). If it is, the method
+// returns true (caller should suppress the finding).
+func (c *hostCache) soft200Check(status, bodyLen int) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.matchesAny(status, bodyLen) {
+		return true
+	}
+	c.tryAdd(status, bodyLen)
+	return false
 }
 
 // AdminCheck probes a target's common admin and sensitive paths using a wordlist.
@@ -73,7 +122,8 @@ func (c *AdminCheck) Severity() checks.Severity { return checks.SeverityMedium }
 func (c *AdminCheck) Category() checks.Category { return checks.CategoryAdmin }
 
 // Run probes each admin wordlist entry against all origins derived from the target.
-// It establishes a per-origin 404 signature first to suppress soft-404 false positives.
+// It establishes a per-origin soft-200 cache first to suppress false positives
+// from servers that return 200 for all paths.
 func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
 	wl, err := wordlists.Load(wordlists.AdminCommon, c.WordlistPath)
 	if err != nil {
@@ -98,8 +148,14 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 
+	wlSource := wl.Source.String()
+
 	for _, origin := range origins {
-		sig := probe404Sig(ctx, target, origin)
+		// Probe a guaranteed-nonexistent path to seed the soft-200 cache.
+		cache := &hostCache{}
+		if sig := probe404Sig(ctx, target, origin); sig != nil {
+			cache.tryAdd(sig.status, sig.bodyLen)
+		}
 
 		for _, path := range wl.Entries {
 			select {
@@ -112,16 +168,16 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 			probeURL := strings.TrimRight(origin, "/") + "/" + strings.TrimLeft(path, "/")
 			sem <- struct{}{}
 			wg.Add(1)
-			go func(pu string) {
+			go func(pu string, c *hostCache) {
 				defer wg.Done()
 				defer func() { <-sem }()
-				f := probeAdminPath(ctx, target, pu, sig, wl.Source.String())
+				f := probeAdminPath(ctx, target, pu, c, wlSource)
 				if f != nil {
 					mu.Lock()
 					findings = append(findings, f)
 					mu.Unlock()
 				}
-			}(probeURL)
+			}(probeURL, cache)
 		}
 	}
 
@@ -131,8 +187,8 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 }
 
 // probeAdminPath makes a single GET request and returns a Finding if the
-// response is interesting (not a 404 or soft-404).
-func probeAdminPath(ctx context.Context, target *checks.Target, rawURL string, sig *notFoundSig, wlSource string) *checks.Finding {
+// response is interesting (not a 404, not a redirect, not a soft-404).
+func probeAdminPath(ctx context.Context, target *checks.Target, rawURL string, cache *hostCache, wlSource string) *checks.Finding {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil
@@ -152,13 +208,17 @@ func probeAdminPath(ctx context.Context, target *checks.Target, rawURL string, s
 	if status == http.StatusNotFound {
 		return nil
 	}
-	// Skip redirects (3xx) to avoid chasing redirect chains.
+	// Skip redirects to avoid chasing redirect chains.
 	if status >= 300 && status < 400 {
 		return nil
 	}
-	// Skip soft-404s.
-	if sig.matches(status, bodyLen) {
-		return nil
+
+	// For 200 responses, check the per-host soft-200 cache.
+	// 401, 403, and 5xx are emitted directly (bypass cache).
+	if status == http.StatusOK {
+		if cache.soft200Check(status, bodyLen) {
+			return nil // suppressed: matches a known soft-200 template
+		}
 	}
 
 	return buildFinding(rawURL, status, body, wlSource)
@@ -208,10 +268,10 @@ func buildFinding(rawURL string, status int, body []byte, wlSource string) *chec
 	}
 }
 
-// probe404Sig establishes the 404 signature for a given origin by probing a path
-// that is extremely unlikely to exist.
-func probe404Sig(ctx context.Context, target *checks.Target, origin string) *notFoundSig {
-	probeURL := strings.TrimRight(origin, "/") + "/suri-probe-nonexistent-e3b0c442"
+// probe404Sig establishes the baseline soft-200 signature for an origin by
+// probing a path that is extremely unlikely to exist on any real application.
+func probe404Sig(ctx context.Context, target *checks.Target, origin string) *soft200Sig {
+	probeURL := strings.TrimRight(origin, "/") + "/" + notFoundProbePath
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, probeURL, nil)
 	if err != nil {
 		return nil
@@ -222,7 +282,7 @@ func probe404Sig(ctx context.Context, target *checks.Target, origin string) *not
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	return &notFoundSig{status: resp.StatusCode, bodyLen: len(body)}
+	return &soft200Sig{status: resp.StatusCode, bodyLen: len(body)}
 }
 
 // uniqueOrigins extracts unique scheme+host origins from seed URLs and the
