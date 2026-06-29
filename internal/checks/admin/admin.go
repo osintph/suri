@@ -18,40 +18,84 @@
 package admin
 
 import (
+	_ "embed"
 	"context"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
+
+	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/osintph/suri/internal/checks"
 	"github.com/osintph/suri/internal/crawler"
 	"github.com/osintph/suri/internal/wordlists"
 )
 
-// probeTier distinguishes between the two wordlist tiers used by the admin check.
-// Severity and confidence differ by tier; the underlying HTTP probing is identical.
-type probeTier int
+//go:embed interesting-paths.toml
+var interestingPathsRaw []byte
 
-const (
-	// tierInteresting probes paths from interesting-paths.txt (always vendored).
-	// Any response other than 404 is emitted as medium/firm: these paths carry
-	// inherent security significance regardless of response shape.
-	tierInteresting probeTier = iota
+// rawCatalogueEntry is the TOML wire format for a single interesting-paths entry.
+type rawCatalogueEntry struct {
+	Path                string   `toml:"path"`
+	Description         string   `toml:"description"`
+	ContentPatterns     []string `toml:"content_patterns"`
+	SeverityIfProtected string   `toml:"severity_if_protected"`
+}
 
-	// tierCommon probes paths from admin-common.txt (tiered: user > cached > vendored).
-	// 200 responses are info/tentative; 401/403/5xx are info/firm. Servers that
-	// return 200 for every unknown path produce thousands of info/tentative findings,
-	// which are suppressed from the default summary by --include-info=false.
-	tierCommon
-)
+type rawCatalogue struct {
+	Paths []rawCatalogueEntry `toml:"paths"`
+}
 
-// AdminCheck probes a target's common admin and sensitive paths using two wordlists.
-// WordlistPath overrides the admin-common.txt tier (user > cached > vendored) only.
-// The interesting-paths.txt wordlist is always loaded from the vendored copy.
+// interestingPath is a parsed catalogue entry ready for use at probe time.
+type interestingPath struct {
+	path        string
+	description string
+	patterns    []*regexp.Regexp
+	severity    checks.Severity // applied to all non-404 findings for this entry
+}
+
+// interestingCatalogue is parsed once at package init from interesting-paths.toml.
+var interestingCatalogue = mustParseCatalogue()
+
+func mustParseCatalogue() []interestingPath {
+	var raw rawCatalogue
+	if err := toml.Unmarshal(interestingPathsRaw, &raw); err != nil {
+		panic(fmt.Sprintf("admin: corrupted interesting-paths.toml: %v", err))
+	}
+	result := make([]interestingPath, 0, len(raw.Paths))
+	for _, e := range raw.Paths {
+		ip := interestingPath{
+			path:        e.Path,
+			description: e.Description,
+			severity:    checks.SeverityMedium,
+		}
+		if e.SeverityIfProtected != "" {
+			ip.severity = checks.Severity(e.SeverityIfProtected)
+		}
+		for _, p := range e.ContentPatterns {
+			re, err := regexp.Compile("(?m)" + p)
+			if err != nil {
+				// Bad pattern in the embedded catalogue is a programming error.
+				// Panic at startup so it is caught immediately in tests and CI.
+				panic(fmt.Sprintf("admin: invalid pattern %q in interesting-paths.toml: %v", p, err))
+			}
+			ip.patterns = append(ip.patterns, re)
+		}
+		result = append(result, ip)
+	}
+	return result
+}
+
+const interestingCheckID = "admin.path.interesting-exposed"
+
+// AdminCheck probes a target's common admin and sensitive paths using two tiers.
+// WordlistPath overrides the admin-common.txt tier only; the interesting-paths
+// catalogue is always loaded from the embedded TOML and cannot be overridden.
 type AdminCheck struct {
 	WordlistPath string
 }
@@ -61,16 +105,17 @@ func (c *AdminCheck) Name() string              { return "Admin Path Discovered"
 func (c *AdminCheck) Severity() checks.Severity { return checks.SeverityMedium }
 func (c *AdminCheck) Category() checks.Category { return checks.CategoryAdmin }
 
-// Run probes each wordlist entry against all origins derived from the target.
-// Interesting paths are probed first (medium/firm on any non-404 response).
-// Common admin paths follow (info/tentative on 200, info/firm on 401/403/5xx).
-// Every probed URL is added to the inventory for operator audit.
+// Run probes each interesting-path catalogue entry then each common admin
+// wordlist entry against all origins derived from the target.
+//
+// Interesting paths: 200 + content pattern match → medium/confirmed (or
+// high/confirmed for high-severity entries); 401/403/5xx → firm; 200 without
+// pattern match → skip (catches SPA catch-all servers). 404 → skip.
+//
+// Common paths: 200 → info/tentative; 401/403/5xx → info/firm; 404 → skip.
+//
+// Every probed URL is added to the inventory regardless of result.
 func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
-	interestingWL, err := wordlists.LoadVendored(wordlists.InterestingPaths)
-	if err != nil {
-		return nil, fmt.Errorf("loading interesting paths wordlist: %w", err)
-	}
-
 	commonWL, err := wordlists.Load(wordlists.AdminCommon, c.WordlistPath)
 	if err != nil {
 		return nil, fmt.Errorf("loading admin wordlist: %w", err)
@@ -94,10 +139,7 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 
-	interestingSource := interestingWL.Source.String()
-	commonSource := commonWL.Source.String()
-
-	dispatch := func(pu, wlSource string, tier probeTier) {
+	addInventory := func(pu string) {
 		if target.Inventory != nil {
 			target.Inventory.URLs = append(target.Inventory.URLs, &crawler.DiscoveredURL{
 				URL:    pu,
@@ -105,38 +147,61 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 				Depth:  0,
 			})
 		}
+	}
 
+	collect := func(f *checks.Finding) {
+		if f != nil {
+			mu.Lock()
+			findings = append(findings, f)
+			mu.Unlock()
+		}
+	}
+
+	launchInteresting := func(pu string, entry interestingPath) {
+		addInventory(pu)
 		select {
 		case <-ctx.Done():
 			return
 		default:
 		}
-
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(u, src string, t probeTier) {
+		go func(u string, e interestingPath) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			f := probeAdminPath(ctx, target, u, src, t)
-			if f != nil {
-				mu.Lock()
-				findings = append(findings, f)
-				mu.Unlock()
-			}
-		}(pu, wlSource, tier)
+			collect(probeInterestingPath(ctx, target, u, e))
+		}(pu, entry)
 	}
 
+	launchCommon := func(pu, src string) {
+		addInventory(pu)
+		select {
+		case <-ctx.Done():
+			return
+		default:
+		}
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(u, s string) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			collect(probeCommonPath(ctx, target, u, s))
+		}(pu, src)
+	}
+
+	commonSource := commonWL.Source.String()
+
 	for _, origin := range origins {
-		for _, path := range interestingWL.Entries {
-			probeURL := strings.TrimRight(origin, "/") + "/" + strings.TrimLeft(path, "/")
-			dispatch(probeURL, interestingSource, tierInteresting)
+		for _, entry := range interestingCatalogue {
+			probeURL := strings.TrimRight(origin, "/") + "/" + strings.TrimLeft(entry.path, "/")
+			launchInteresting(probeURL, entry)
 		}
 	}
 
 	for _, origin := range origins {
 		for _, path := range commonWL.Entries {
 			probeURL := strings.TrimRight(origin, "/") + "/" + strings.TrimLeft(path, "/")
-			dispatch(probeURL, commonSource, tierCommon)
+			launchCommon(probeURL, commonSource)
 		}
 	}
 
@@ -144,20 +209,101 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 	slog.Debug("admin check complete",
 		"findings", len(findings),
 		"origins", len(origins),
-		"interesting_paths", len(interestingWL.Entries),
+		"interesting_paths", len(interestingCatalogue),
 		"common_paths", len(commonWL.Entries),
 	)
 	return findings, nil
 }
 
-// probeAdminPath makes a single GET request and returns a Finding if the
-// response is interesting for the given tier.
-func probeAdminPath(ctx context.Context, target *checks.Target, rawURL, wlSource string, tier probeTier) *checks.Finding {
+// probeInterestingPath fetches rawURL and returns a Finding if the response
+// is security-relevant for the given catalogue entry.
+//
+//   - 200 + any content pattern match → severity/confirmed (content verified)
+//   - 200, no pattern match → nil (SPA catch-all; body is not the expected file)
+//   - 401/403/5xx → severity/firm (path exists, access restricted)
+//   - 404, network error → nil
+func probeInterestingPath(ctx context.Context, target *checks.Target, rawURL string, entry interestingPath) *checks.Finding {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return nil
 	}
+	resp, err := target.HTTP.Do(ctx, req)
+	if err != nil {
+		return nil
+	}
+	defer resp.Body.Close()
 
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
+	status := resp.StatusCode
+
+	if status == http.StatusNotFound {
+		return nil
+	}
+
+	if status == http.StatusUnauthorized || status == http.StatusForbidden || status >= 500 {
+		evidence := &checks.Evidence{
+			ResponseStatus: status,
+			ResponseBytes:  body,
+		}
+		if len(evidence.ResponseBytes) > 4096 {
+			evidence.ResponseBytes = evidence.ResponseBytes[:4096]
+		}
+		return &checks.Finding{
+			CheckID:    interestingCheckID,
+			Severity:   entry.severity,
+			Confidence: checks.ConfidenceFirm,
+			Title:      entry.description + " exists at " + rawURL + " (access restricted)",
+			Description: fmt.Sprintf(
+				"%s at %s responded with HTTP %d. The path is present but access is restricted.",
+				entry.description, rawURL, status,
+			),
+			URL:            rawURL,
+			Evidence:       evidence,
+			WordlistSource: "embedded:interesting-paths.toml",
+		}
+	}
+
+	if status == http.StatusOK {
+		for _, re := range entry.patterns {
+			if re.Match(body) {
+				excerpt := body
+				if len(excerpt) > 200 {
+					excerpt = excerpt[:200]
+				}
+				return &checks.Finding{
+					CheckID:    interestingCheckID,
+					Severity:   entry.severity,
+					Confidence: checks.ConfidenceConfirmed,
+					Title:      entry.description + " exposed at " + rawURL,
+					Description: fmt.Sprintf(
+						"%s confirmed at %s (content pattern verified).",
+						entry.description, rawURL,
+					),
+					URL: rawURL,
+					Evidence: &checks.Evidence{
+						ResponseStatus: status,
+						ResponseBytes:  excerpt,
+					},
+					WordlistSource: "embedded:interesting-paths.toml",
+				}
+			}
+		}
+		// No pattern matched: body is not what we expected (likely SPA catch-all).
+		return nil
+	}
+
+	// Other 2xx or 3xx are skipped. The HTTP client follows redirects, so a
+	// 3xx here typically means the redirect chain ended out-of-scope.
+	return nil
+}
+
+// probeCommonPath fetches rawURL and returns an info-severity Finding for any
+// response other than 404 and redirects.
+func probeCommonPath(ctx context.Context, target *checks.Target, rawURL, wlSource string) *checks.Finding {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil
+	}
 	resp, err := target.HTTP.Do(ctx, req)
 	if err != nil {
 		return nil
@@ -167,100 +313,40 @@ func probeAdminPath(ctx context.Context, target *checks.Target, rawURL, wlSource
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	status := resp.StatusCode
 
-	// 404 is always skipped: the path does not exist.
 	if status == http.StatusNotFound {
 		return nil
 	}
-
-	switch tier {
-	case tierInteresting:
-		// Every non-404 response on an interesting path is noteworthy regardless
-		// of content or response shape. No soft-200 detection is attempted.
-		return buildFinding(rawURL, status, body, wlSource, tier)
-
-	case tierCommon:
-		// Skip redirects for common paths. The HTTP client follows redirects, so
-		// a 3xx here means the redirect chain terminated early (e.g. out-of-scope
-		// destination). Either way, not interesting enough to emit.
-		if status >= 300 && status < 400 {
-			return nil
-		}
-		return buildFinding(rawURL, status, body, wlSource, tier)
+	if status >= 300 && status < 400 {
+		return nil
 	}
 
-	return nil
-}
-
-// buildFinding constructs a Finding for an interesting admin path response.
-// Severity and confidence depend on the probe tier.
-func buildFinding(rawURL string, status int, body []byte, wlSource string, tier probeTier) *checks.Finding {
 	var severity checks.Severity
 	var confidence checks.Confidence
 	var title, description string
 
-	switch tier {
-	case tierInteresting:
-		severity = checks.SeverityMedium
+	switch {
+	case status == http.StatusOK:
+		severity = checks.SeverityInfo
+		confidence = checks.ConfidenceTentative
+		title = "Admin path responded with 200"
+		description = fmt.Sprintf(
+			"Path %s returned HTTP 200. No content verification was performed. "+
+				"Use --include-info to review findings of this type.",
+			rawURL,
+		)
+	case status == http.StatusUnauthorized || status == http.StatusForbidden:
+		severity = checks.SeverityInfo
 		confidence = checks.ConfidenceFirm
-		switch {
-		case status == http.StatusOK:
-			title = "Sensitive file or directory accessible"
-			description = fmt.Sprintf(
-				"A sensitive path responded with HTTP 200 OK at %s. "+
-					"The path is security-relevant and its presence should be reviewed.",
-				rawURL,
-			)
-		case status == http.StatusUnauthorized || status == http.StatusForbidden:
-			title = "Sensitive file exists (access restricted)"
-			description = fmt.Sprintf(
-				"A sensitive path responded with HTTP %d at %s. "+
-					"The path exists but is access-restricted, confirming it is present on this server.",
-				status, rawURL,
-			)
-		case status >= 500:
-			title = "Sensitive path caused server error"
-			description = fmt.Sprintf(
-				"A sensitive path responded with HTTP %d at %s. "+
-					"A server error on this path may indicate it is handled but misconfigured.",
-				status, rawURL,
-			)
-		default:
-			title = "Sensitive path responded"
-			description = fmt.Sprintf(
-				"A sensitive path at %s responded with HTTP %d. Manual review is recommended.",
-				rawURL, status,
-			)
-		}
-
-	case tierCommon:
-		switch {
-		case status == http.StatusOK:
-			severity = checks.SeverityInfo
-			confidence = checks.ConfidenceTentative
-			title = "Admin path responded with 200"
-			description = fmt.Sprintf(
-				"Path %s returned HTTP 200. No further analysis was performed. "+
-					"Servers that return 200 for all unknown paths will produce many findings of this type; "+
-					"use --include-info to view them or omit it to suppress them from the summary.",
-				rawURL,
-			)
-		case status == http.StatusUnauthorized || status == http.StatusForbidden:
-			severity = checks.SeverityInfo
-			confidence = checks.ConfidenceFirm
-			title = "Admin path restricted"
-			description = fmt.Sprintf(
-				"Admin or sensitive path responded with HTTP %d at %s (path exists, access restricted).",
-				status, rawURL,
-			)
-		default:
-			severity = checks.SeverityInfo
-			confidence = checks.ConfidenceFirm
-			title = "Admin path responded"
-			description = fmt.Sprintf(
-				"Admin or sensitive path responded with HTTP %d at %s.",
-				status, rawURL,
-			)
-		}
+		title = "Admin path restricted"
+		description = fmt.Sprintf(
+			"Admin or sensitive path responded with HTTP %d at %s (path exists, access restricted).",
+			status, rawURL,
+		)
+	default:
+		severity = checks.SeverityInfo
+		confidence = checks.ConfidenceFirm
+		title = "Admin path responded"
+		description = fmt.Sprintf("Admin or sensitive path responded with HTTP %d at %s.", status, rawURL)
 	}
 
 	evidence := &checks.Evidence{
@@ -274,10 +360,10 @@ func buildFinding(rawURL string, status int, body []byte, wlSource string, tier 
 	return &checks.Finding{
 		CheckID:        "admin.path.discovered",
 		Severity:       severity,
+		Confidence:     confidence,
 		Title:          title,
 		Description:    description,
 		URL:            rawURL,
-		Confidence:     confidence,
 		Evidence:       evidence,
 		WordlistSource: wlSource,
 	}

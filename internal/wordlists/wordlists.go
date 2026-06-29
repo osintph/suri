@@ -39,10 +39,9 @@ import (
 
 // Standard wordlist names used by scan checks.
 const (
-	AdminCommon      = "admin-common.txt"
-	APIPaths         = "api-paths.txt"
-	SwaggerPaths     = "swagger-paths.txt"
-	InterestingPaths = "interesting-paths.txt"
+	AdminCommon  = "admin-common.txt"
+	APIPaths     = "api-paths.txt"
+	SwaggerPaths = "swagger-paths.txt"
 )
 
 // PinnedCommit is the SecLists tag or commit reference used by "wordlists update".
@@ -132,7 +131,7 @@ func IsPinStale() bool {
 func ListAll() ([]ListEntry, error) {
 	var entries []ListEntry
 
-	for _, name := range []string{AdminCommon, APIPaths, SwaggerPaths, InterestingPaths} {
+	for _, name := range []string{AdminCommon, APIPaths, SwaggerPaths} {
 		wl, err := loadEmbedded(name)
 		if err != nil {
 			continue

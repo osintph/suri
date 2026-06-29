@@ -64,9 +64,21 @@ func miniWordlist(t *testing.T, paths ...string) string {
 	return f.Name()
 }
 
-// TestAdminCheckInterestingPathFinding verifies that a 200 response on a path
-// from interesting-paths.txt (.git/HEAD) emits a medium/firm finding.
-func TestAdminCheckInterestingPathFinding(t *testing.T) {
+// findFinding returns the first finding whose URL contains the given substring.
+func findFinding(findings []*checks.Finding, urlSubstr string) *checks.Finding {
+	for _, f := range findings {
+		if strings.Contains(f.URL, urlSubstr) {
+			return f
+		}
+	}
+	return nil
+}
+
+// --- Interesting-paths catalogue tests ---
+
+// TestInterestingPathContentVerified verifies that .git/HEAD returning a body
+// that matches the content pattern emits a medium/confirmed finding.
+func TestInterestingPathContentVerified(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.git/HEAD" {
 			w.WriteHeader(http.StatusOK)
@@ -77,7 +89,6 @@ func TestAdminCheckInterestingPathFinding(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	// Use an empty common wordlist to isolate the interesting-paths tier.
 	target := testTarget(srv)
 	ck := &AdminCheck{WordlistPath: miniWordlist(t)}
 
@@ -86,28 +97,62 @@ func TestAdminCheckInterestingPathFinding(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	var found *checks.Finding
-	for _, f := range findings {
-		if strings.Contains(f.URL, "/.git/HEAD") {
-			found = f
-			break
-		}
-	}
-	if found == nil {
+	f := findFinding(findings, "/.git/HEAD")
+	if f == nil {
 		t.Fatal("expected a finding for /.git/HEAD, got none")
 	}
-	if found.Severity != checks.SeverityMedium {
-		t.Errorf("Severity: want medium, got %q", found.Severity)
+	if f.CheckID != interestingCheckID {
+		t.Errorf("CheckID: want %q, got %q", interestingCheckID, f.CheckID)
 	}
-	if found.Confidence != checks.ConfidenceFirm {
-		t.Errorf("Confidence: want firm, got %q", found.Confidence)
+	if f.Severity != checks.SeverityMedium {
+		t.Errorf("Severity: want medium, got %q", f.Severity)
+	}
+	if f.Confidence != checks.ConfidenceConfirmed {
+		t.Errorf("Confidence: want confirmed, got %q", f.Confidence)
+	}
+	if !strings.Contains(f.Title, "Git repository HEAD reference") {
+		t.Errorf("Title should contain catalogue description, got %q", f.Title)
 	}
 }
 
-// TestAdminCheckInterestingPathStillEmittedOn403 verifies that a 403 response
-// on an interesting path (.env) still emits a medium/firm finding (path exists,
-// access restricted, still security-relevant).
-func TestAdminCheckInterestingPathStillEmittedOn403(t *testing.T) {
+// TestInterestingPathSPACatchAll verifies that .git/HEAD returning an Angular
+// SPA shell (no content pattern match) does not emit a finding.
+func TestInterestingPathSPACatchAll(t *testing.T) {
+	spaBody := `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8">
+<title>OWASP Juice Shop</title>
+<base href="/">
+<link rel="stylesheet" href="styles.css">
+</head><body><app-root></app-root>
+<script src="runtime.js"></script>
+<script src="main.js"></script>
+</body></html>`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Angular SPA: every URL returns 200 with the app shell.
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(spaBody))
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	ck := &AdminCheck{WordlistPath: miniWordlist(t)}
+
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	// No interesting-path finding should be emitted; SPA bodies never match.
+	for _, f := range findings {
+		if f.CheckID == interestingCheckID {
+			t.Errorf("unexpected interesting-path finding for SPA catch-all: %s %s", f.URL, f.Title)
+		}
+	}
+}
+
+// TestInterestingPath403StillFlags verifies that a 403 response on an
+// interesting path emits a medium/firm finding even without content verification.
+func TestInterestingPath403StillFlags(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/.env" {
 			w.WriteHeader(http.StatusForbidden)
@@ -126,27 +171,116 @@ func TestAdminCheckInterestingPathStillEmittedOn403(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	var found *checks.Finding
-	for _, f := range findings {
-		if strings.Contains(f.URL, "/.env") {
-			found = f
-			break
-		}
-	}
-	if found == nil {
+	f := findFinding(findings, "/.env")
+	if f == nil {
 		t.Fatal("expected a finding for /.env (403), got none")
 	}
-	if found.Severity != checks.SeverityMedium {
-		t.Errorf("Severity: want medium, got %q", found.Severity)
+	if f.Severity != checks.SeverityMedium {
+		t.Errorf("Severity: want medium, got %q", f.Severity)
 	}
-	if found.Confidence != checks.ConfidenceFirm {
-		t.Errorf("Confidence: want firm, got %q", found.Confidence)
+	if f.Confidence != checks.ConfidenceFirm {
+		t.Errorf("Confidence: want firm, got %q", f.Confidence)
 	}
 }
 
+// TestInterestingPathHighSeverity verifies that entries with severity_if_protected
+// = "high" emit a high/confirmed finding when a content pattern matches.
+func TestInterestingPathHighSeverity(t *testing.T) {
+	privateKey := "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA...\n-----END RSA PRIVATE KEY-----\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/id_rsa" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(privateKey))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	ck := &AdminCheck{WordlistPath: miniWordlist(t)}
+
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	f := findFinding(findings, "/id_rsa")
+	if f == nil {
+		t.Fatal("expected a finding for /id_rsa, got none")
+	}
+	if f.Severity != checks.SeverityHigh {
+		t.Errorf("Severity: want high, got %q", f.Severity)
+	}
+	if f.Confidence != checks.ConfidenceConfirmed {
+		t.Errorf("Confidence: want confirmed, got %q", f.Confidence)
+	}
+}
+
+// TestInterestingPath404NoFinding verifies that a 404 response on any
+// interesting-paths catalogue entry emits no finding.
+func TestInterestingPath404NoFinding(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("not found"))
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	ck := &AdminCheck{WordlistPath: miniWordlist(t)}
+
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, f := range findings {
+		if f.CheckID == interestingCheckID {
+			t.Errorf("unexpected interesting-path finding on all-404 server: %s", f.URL)
+		}
+	}
+}
+
+// TestInterestingPathBodyExcerptInEvidence verifies that a confirmed interesting-path
+// finding includes at most 200 bytes of the response body in its evidence.
+func TestInterestingPathBodyExcerptInEvidence(t *testing.T) {
+	longBody := "ref: refs/heads/main\n" + strings.Repeat("X", 500)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/.git/HEAD" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(longBody))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	ck := &AdminCheck{WordlistPath: miniWordlist(t)}
+
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	f := findFinding(findings, "/.git/HEAD")
+	if f == nil {
+		t.Fatal("expected a finding for /.git/HEAD, got none")
+	}
+	if f.Evidence == nil {
+		t.Fatal("expected Evidence to be set on confirmed finding")
+	}
+	if len(f.Evidence.ResponseBytes) > 200 {
+		t.Errorf("Evidence.ResponseBytes: want at most 200 bytes, got %d", len(f.Evidence.ResponseBytes))
+	}
+}
+
+// --- Common-path wordlist tests ---
+
 // TestAdminCheckCommonPath200IsInfoTentative verifies that a 200 response on a
-// common admin path emits an info/tentative finding (no soft-200 detection; the
-// operator decides whether to review these via --include-info).
+// common admin path emits an info/tentative finding.
 func TestAdminCheckCommonPath200IsInfoTentative(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/admin" {
@@ -166,21 +300,15 @@ func TestAdminCheckCommonPath200IsInfoTentative(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	var found *checks.Finding
-	for _, f := range findings {
-		if strings.Contains(f.URL, "/admin") {
-			found = f
-			break
-		}
-	}
-	if found == nil {
+	f := findFinding(findings, "/admin")
+	if f == nil {
 		t.Fatal("expected a finding for /admin (200), got none")
 	}
-	if found.Severity != checks.SeverityInfo {
-		t.Errorf("Severity: want info, got %q", found.Severity)
+	if f.Severity != checks.SeverityInfo {
+		t.Errorf("Severity: want info, got %q", f.Severity)
 	}
-	if found.Confidence != checks.ConfidenceTentative {
-		t.Errorf("Confidence: want tentative, got %q", found.Confidence)
+	if f.Confidence != checks.ConfidenceTentative {
+		t.Errorf("Confidence: want tentative, got %q", f.Confidence)
 	}
 }
 
@@ -206,26 +334,20 @@ func TestAdminCheckCommonPath401IsInfoFirm(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	var found *checks.Finding
-	for _, f := range findings {
-		if strings.Contains(f.URL, "/admin") {
-			found = f
-			break
-		}
-	}
-	if found == nil {
+	f := findFinding(findings, "/admin")
+	if f == nil {
 		t.Fatal("expected a finding for /admin (401), got none")
 	}
-	if found.Severity != checks.SeverityInfo {
-		t.Errorf("Severity: want info, got %q", found.Severity)
+	if f.Severity != checks.SeverityInfo {
+		t.Errorf("Severity: want info, got %q", f.Severity)
 	}
-	if found.Confidence != checks.ConfidenceFirm {
-		t.Errorf("Confidence: want firm, got %q", found.Confidence)
+	if f.Confidence != checks.ConfidenceFirm {
+		t.Errorf("Confidence: want firm, got %q", f.Confidence)
 	}
 }
 
 // TestAdminCheckNoFindingOn404 verifies that 404 responses produce no findings
-// for either wordlist tier.
+// from either probe tier.
 func TestAdminCheckNoFindingOn404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
@@ -265,14 +387,13 @@ func TestAdminCheckRedirectSkipped(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	// /admin redirects to /login which returns 404. The client follows the redirect
-	// and sees 404, which is skipped. Interesting paths also return 404 (skipped).
+	// /admin redirects to /login which returns 404. Interesting paths also 404.
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings when redirect leads to 404, got %d", len(findings))
 	}
 }
 
-// TestAdminCheckWordlistSource verifies that the WordlistSource field on a
+// TestAdminCheckWordlistSource verifies that the WordlistSource on a common-path
 // finding reflects the user-supplied wordlist tier when -w is given.
 func TestAdminCheckWordlistSource(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -294,18 +415,14 @@ func TestAdminCheckWordlistSource(t *testing.T) {
 		t.Fatalf("Run: %v", err)
 	}
 
-	var adminFinding *checks.Finding
-	for _, f := range findings {
-		if strings.Contains(f.URL, "/admin") {
-			adminFinding = f
-			break
-		}
-	}
-	if adminFinding == nil {
+	// /admin returns 200 without matching any interesting-path pattern,
+	// so the finding comes from the common wordlist tier.
+	f := findFinding(findings, "/admin")
+	if f == nil {
 		t.Fatal("expected a finding for /admin")
 	}
-	if !strings.HasPrefix(adminFinding.WordlistSource, "user:") {
-		t.Errorf("WordlistSource: want user:..., got %q", adminFinding.WordlistSource)
+	if !strings.HasPrefix(f.WordlistSource, "user:") {
+		t.Errorf("WordlistSource: want user:..., got %q", f.WordlistSource)
 	}
 }
 

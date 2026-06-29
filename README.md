@@ -60,11 +60,11 @@ GCS-compatible storage (`--gcs-endpoint`).
 
 ## Admin path discovery
 
-The admin check probes two wordlists with different severity tiers.
+The admin check probes two tiers.
 
-**Interesting paths** (`wordlists/embedded/interesting-paths.txt`) contains ~50 hand-curated paths that are inherently security-relevant when present: `.git/HEAD`, `.env`, `Dockerfile`, `.htpasswd`, `wp-config.php`, and similar. Any response other than 404 (including 401, 403, redirects, and 5xx) emits a `medium/firm` finding. This list is always loaded from the vendored copy and cannot be overridden by the cache or `-w` flag.
+**Interesting paths** (`internal/checks/admin/interesting-paths.toml`) is a structured TOML catalogue of ~50 hand-curated entries: `.git/HEAD`, `.env`, `.htpasswd`, `wp-config.php`, `id_rsa`, and similar. Each entry carries content patterns for response body verification. A 200 response is only flagged when the body matches at least one pattern, which eliminates false positives from SPA catch-all routing. A 401, 403, or 5xx response emits a finding without content verification (the path exists but access is restricted). 404 is always skipped.
 
-**Common admin paths** (`admin-common.txt`) is the general discovery wordlist. Responses are emitted as `info/tentative` (200) or `info/firm` (401, 403, 5xx). Apps that return their SPA shell for every unknown path will produce thousands of `info/tentative` findings, one per wordlist entry. These are suppressed from the default summary.
+**Common admin paths** (`admin-common.txt`) is the general discovery wordlist. Responses are emitted as `info/tentative` (200) or `info/firm` (401, 403, 5xx). These are suppressed from the default summary.
 
 Use `--include-info` to show all findings including the info tier:
 
@@ -75,8 +75,6 @@ suri scan --scope scope.toml https://target.example.com
 # Show all findings including info/tentative from the common wordlist
 suri scan --scope scope.toml --include-info https://target.example.com
 ```
-
-Suri does not attempt automatic soft-200 detection. Apps that return their SPA shell for every unknown path will produce `info/tentative` findings for every admin-wordlist probe. These are suppressed from default output. Use `--include-info` if you want to review them, typically only useful for engagement audit purposes or for spotting paths that genuinely differ from the SPA template.
 
 ## Wordlists
 
