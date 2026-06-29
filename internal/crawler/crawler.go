@@ -291,6 +291,13 @@ func (c *Crawler) processHTML(pageURL string, base *url.URL, depth int, data []b
 						extractQueryParams(pageURL, abs, inv, mu)
 					}
 				}
+			case "link":
+				// <link href> for stylesheets and other referenced resources.
+				if href := attr(n, "href"); href != "" {
+					if abs := toAbsolute(base, href); abs != "" && c.inScope(abs) {
+						dispatch(abs, "html", depth+1)
+					}
+				}
 			case "form":
 				action := attr(n, "action")
 				method := strings.ToUpper(attr(n, "method"))

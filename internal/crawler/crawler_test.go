@@ -288,3 +288,203 @@ func TestCrawlOutOfScopeLinksIgnored(t *testing.T) {
 		}
 	}
 }
+
+// TestCrawlerRedirectExtractsLinks verifies that <a href> and <link href>
+// elements in a redirect-target body are extracted and added to the inventory.
+func TestCrawlerRedirectExtractsLinks(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, srv.URL+"/landing", http.StatusFound)
+		case "/landing":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<!DOCTYPE html><html><head>
+<link rel="stylesheet" href="/style.css">
+</head><body>
+<a href="/about">About</a>
+</body></html>`))
+		case "/about", "/style.css":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("ok"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	sc := localhostScope()
+	client := internalhttp.New(sc)
+	cfg := Config{MaxDepth: 2, MaxURLs: 50, Concurrency: 2, RatePerHost: 100}
+	cr := New(sc, client, cfg)
+
+	inv, err := cr.Crawl(context.Background(), []string{srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("Crawl: %v", err)
+	}
+
+	urlSet := make(map[string]bool)
+	for _, u := range inv.URLs {
+		urlSet[u.URL] = true
+	}
+
+	if !urlSet[srv.URL+"/about"] {
+		t.Errorf("<a href='/about'> from redirect target not in inventory; got %v", urlSet)
+	}
+	if !urlSet[srv.URL+"/style.css"] {
+		t.Errorf("<link href='/style.css'> from redirect target not in inventory; got %v", urlSet)
+	}
+}
+
+// TestCrawlerRedirectMinesJS verifies that a <script src> referenced from a
+// redirect-target body is fetched and its JS artifacts mined.
+func TestCrawlerRedirectMinesJS(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, srv.URL+"/landing", http.StatusFound)
+		case "/landing":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<!DOCTYPE html><html><body>
+<script src="/static/main.js"></script>
+</body></html>`))
+		case "/static/main.js":
+			w.Header().Set("Content-Type", "application/javascript")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`var apiBase = "/api/users";`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	sc := localhostScope()
+	client := internalhttp.New(sc)
+	cfg := Config{MaxDepth: 3, MaxURLs: 50, Concurrency: 2, RatePerHost: 100}
+	cr := New(sc, client, cfg)
+
+	inv, err := cr.Crawl(context.Background(), []string{srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("Crawl: %v", err)
+	}
+
+	// The script file itself must appear in the inventory.
+	urlSet := make(map[string]bool)
+	for _, u := range inv.URLs {
+		urlSet[u.URL] = true
+	}
+	if !urlSet[srv.URL+"/static/main.js"] {
+		t.Errorf("<script src='/static/main.js'> from redirect target not in inventory; got %v", urlSet)
+	}
+
+	// The JS artifact /api/users must be mined from main.js.
+	found := false
+	for _, a := range inv.JSArtifacts {
+		if a.Value == "/api/users" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("JS artifact /api/users not mined from /static/main.js; artifacts: %v", inv.JSArtifacts)
+	}
+}
+
+// TestCrawlerRedirectRelativeURLResolution verifies that relative hrefs in a
+// redirect-target body resolve against the target URL, not the seed URL.
+// The redirect target is at /section/page so that a relative href "about"
+// (no leading slash) resolves differently against /section/page than against /.
+func TestCrawlerRedirectRelativeURLResolution(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, srv.URL+"/section/page", http.StatusFound)
+		case "/section/page":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<!DOCTYPE html><html><body>
+<a href="./about">About</a>
+</body></html>`))
+		case "/section/about":
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("about page"))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	sc := localhostScope()
+	client := internalhttp.New(sc)
+	cfg := Config{MaxDepth: 3, MaxURLs: 50, Concurrency: 2, RatePerHost: 100}
+	cr := New(sc, client, cfg)
+
+	inv, err := cr.Crawl(context.Background(), []string{srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("Crawl: %v", err)
+	}
+
+	urlSet := make(map[string]bool)
+	for _, u := range inv.URLs {
+		urlSet[u.URL] = true
+	}
+
+	// ./about relative to /section/page must resolve to /section/about.
+	if !urlSet[srv.URL+"/section/about"] {
+		t.Errorf("./about did not resolve to /section/about against redirect-target base; inventory: %v", urlSet)
+	}
+	// Must NOT resolve to /about (which would happen if seed URL / was used as base).
+	if urlSet[srv.URL+"/about"] {
+		t.Errorf("./about incorrectly resolved to /about (seed URL used as base instead of redirect target)")
+	}
+}
+
+// TestCrawlerRedirectFormPageURLAlreadyWorks is a regression test confirming
+// that form extraction on redirect-target bodies sets the correct page_url.
+func TestCrawlerRedirectFormPageURLAlreadyWorks(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, srv.URL+"/landing", http.StatusFound)
+		case "/landing":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<!DOCTYPE html><html><body>
+<form action="/submit" method="post">
+  <input name="username" type="text">
+</form>
+</body></html>`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	sc := localhostScope()
+	client := internalhttp.New(sc)
+	cfg := Config{MaxDepth: 2, MaxURLs: 50, Concurrency: 2, RatePerHost: 100}
+	cr := New(sc, client, cfg)
+
+	inv, err := cr.Crawl(context.Background(), []string{srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("Crawl: %v", err)
+	}
+
+	if len(inv.Forms) == 0 {
+		t.Fatal("expected at least one form from redirect-target body, got none")
+	}
+
+	// The form's PageURL must be the redirect target, not the seed URL.
+	f := inv.Forms[0]
+	if f.PageURL != srv.URL+"/landing" {
+		t.Errorf("form PageURL: want %s/landing, got %q", srv.URL, f.PageURL)
+	}
+	if f.Action != srv.URL+"/submit" {
+		t.Errorf("form Action: want %s/submit, got %q", srv.URL, f.Action)
+	}
+}
