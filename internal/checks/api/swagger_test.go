@@ -262,6 +262,49 @@ func TestSwaggerCheckRecordsProbeURLs(t *testing.T) {
 	}
 }
 
+// TestSwaggerProbeWritesStatusBack verifies that after Run completes, every URL
+// recorded in the inventory with source "swagger-probe" has a non-zero
+// ResponseStatus and a non-empty BodyHash.
+func TestSwaggerProbeWritesStatusBack(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/swagger.json" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(minimalSwaggerJSON))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("not found"))
+	}))
+	defer srv.Close()
+
+	target := testAPITarget(srv)
+	ck := &SwaggerCheck{}
+
+	_, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var probeURLs []*crawler.DiscoveredURL
+	for _, u := range target.Inventory.URLs {
+		if u.Source == "swagger-probe" {
+			probeURLs = append(probeURLs, u)
+		}
+	}
+	if len(probeURLs) == 0 {
+		t.Fatal("expected swagger-probe URLs in inventory, got none")
+	}
+	for _, u := range probeURLs {
+		if u.ResponseStatus == 0 {
+			t.Errorf("swagger-probe URL %s: ResponseStatus not set (got 0)", u.URL)
+		}
+		if u.BodyHash == "" {
+			t.Errorf("swagger-probe URL %s: BodyHash not set", u.URL)
+		}
+	}
+}
+
 func TestLooksLikeOpenAPISpec(t *testing.T) {
 	cases := []struct {
 		body []byte

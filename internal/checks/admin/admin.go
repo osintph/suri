@@ -20,6 +20,8 @@ package admin
 import (
 	_ "embed"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"log/slog"
@@ -139,14 +141,13 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 	sem := make(chan struct{}, concurrency)
 	var wg sync.WaitGroup
 
-	addInventory := func(pu string) {
-		if target.Inventory != nil {
-			target.Inventory.URLs = append(target.Inventory.URLs, &crawler.DiscoveredURL{
-				URL:    pu,
-				Source: "admin-probe",
-				Depth:  0,
-			})
+	addInventory := func(pu string) *crawler.DiscoveredURL {
+		if target.Inventory == nil {
+			return nil
 		}
+		du := &crawler.DiscoveredURL{URL: pu, Source: "admin-probe", Depth: 0}
+		target.Inventory.URLs = append(target.Inventory.URLs, du)
+		return du
 	}
 
 	collect := func(f *checks.Finding) {
@@ -158,7 +159,7 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 	}
 
 	launchInteresting := func(pu string, entry interestingPath) {
-		addInventory(pu)
+		du := addInventory(pu)
 		select {
 		case <-ctx.Done():
 			return
@@ -166,15 +167,20 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 		}
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(u string, e interestingPath) {
+		go func(u string, e interestingPath, d *crawler.DiscoveredURL) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			collect(probeInterestingPath(ctx, target, u, e))
-		}(pu, entry)
+			f, status, hash := probeInterestingPath(ctx, target, u, e)
+			if d != nil {
+				d.ResponseStatus = status
+				d.BodyHash = hash
+			}
+			collect(f)
+		}(pu, entry, du)
 	}
 
 	launchCommon := func(pu, src string) {
-		addInventory(pu)
+		du := addInventory(pu)
 		select {
 		case <-ctx.Done():
 			return
@@ -182,11 +188,16 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 		}
 		sem <- struct{}{}
 		wg.Add(1)
-		go func(u, s string) {
+		go func(u, s string, d *crawler.DiscoveredURL) {
 			defer wg.Done()
 			defer func() { <-sem }()
-			collect(probeCommonPath(ctx, target, u, s))
-		}(pu, src)
+			f, status, hash := probeCommonPath(ctx, target, u, s)
+			if d != nil {
+				d.ResponseStatus = status
+				d.BodyHash = hash
+			}
+			collect(f)
+		}(pu, src, du)
 	}
 
 	commonSource := commonWL.Source.String()
@@ -216,28 +227,30 @@ func (c *AdminCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 }
 
 // probeInterestingPath fetches rawURL and returns a Finding if the response
-// is security-relevant for the given catalogue entry.
+// is security-relevant for the given catalogue entry, along with the HTTP status
+// and body hash for inventory persistence.
 //
 //   - 200 + any content pattern match → severity/confirmed (content verified)
 //   - 200, no pattern match → nil (SPA catch-all; body is not the expected file)
 //   - 401/403/5xx → severity/firm (path exists, access restricted)
 //   - 404, network error → nil
-func probeInterestingPath(ctx context.Context, target *checks.Target, rawURL string, entry interestingPath) *checks.Finding {
+func probeInterestingPath(ctx context.Context, target *checks.Target, rawURL string, entry interestingPath) (*checks.Finding, int, string) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil
+		return nil, 0, ""
 	}
 	resp, err := target.HTTP.Do(ctx, req)
 	if err != nil {
-		return nil
+		return nil, 0, ""
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 32*1024))
 	status := resp.StatusCode
+	bodyHash := adminHashBody(body)
 
 	if status == http.StatusNotFound {
-		return nil
+		return nil, status, bodyHash
 	}
 
 	if status == http.StatusUnauthorized || status == http.StatusForbidden || status >= 500 {
@@ -260,7 +273,7 @@ func probeInterestingPath(ctx context.Context, target *checks.Target, rawURL str
 			URL:            rawURL,
 			Evidence:       evidence,
 			WordlistSource: "embedded:interesting-paths.toml",
-		}
+		}, status, bodyHash
 	}
 
 	if status == http.StatusOK {
@@ -285,39 +298,40 @@ func probeInterestingPath(ctx context.Context, target *checks.Target, rawURL str
 						ResponseBytes:  excerpt,
 					},
 					WordlistSource: "embedded:interesting-paths.toml",
-				}
+				}, status, bodyHash
 			}
 		}
 		// No pattern matched: body is not what we expected (likely SPA catch-all).
-		return nil
+		return nil, status, bodyHash
 	}
 
 	// Other 2xx or 3xx are skipped. The HTTP client follows redirects, so a
 	// 3xx here typically means the redirect chain ended out-of-scope.
-	return nil
+	return nil, status, bodyHash
 }
 
 // probeCommonPath fetches rawURL and returns an info-severity Finding for any
-// response other than 404 and redirects.
-func probeCommonPath(ctx context.Context, target *checks.Target, rawURL, wlSource string) *checks.Finding {
+// response other than 404 and redirects, along with the HTTP status and body hash.
+func probeCommonPath(ctx context.Context, target *checks.Target, rawURL, wlSource string) (*checks.Finding, int, string) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return nil
+		return nil, 0, ""
 	}
 	resp, err := target.HTTP.Do(ctx, req)
 	if err != nil {
-		return nil
+		return nil, 0, ""
 	}
 	defer resp.Body.Close()
 
 	body, _ := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
 	status := resp.StatusCode
+	bodyHash := adminHashBody(body)
 
 	if status == http.StatusNotFound {
-		return nil
+		return nil, status, bodyHash
 	}
 	if status >= 300 && status < 400 {
-		return nil
+		return nil, status, bodyHash
 	}
 
 	var severity checks.Severity
@@ -366,7 +380,17 @@ func probeCommonPath(ctx context.Context, target *checks.Target, rawURL, wlSourc
 		URL:            rawURL,
 		Evidence:       evidence,
 		WordlistSource: wlSource,
+	}, status, bodyHash
+}
+
+// adminHashBody returns the hex SHA-256 of up to 32 KB of body.
+func adminHashBody(body []byte) string {
+	const limit = 32 * 1024
+	if len(body) > limit {
+		body = body[:limit]
 	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 // uniqueOrigins extracts unique scheme+host origins from seed URLs and the

@@ -426,6 +426,45 @@ func TestAdminCheckWordlistSource(t *testing.T) {
 	}
 }
 
+// TestAdminProbeWritesStatusBack verifies that after Run completes, every URL
+// added to the inventory by a probe has its ResponseStatus set to a non-zero
+// value and its BodyHash set to a non-empty string.
+func TestAdminProbeWritesStatusBack(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/admin" {
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte("admin panel"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+		w.Write([]byte("not found"))
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	ck := &AdminCheck{WordlistPath: miniWordlist(t, "/admin")}
+
+	_, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	if len(target.Inventory.URLs) == 0 {
+		t.Fatal("expected probe URLs in inventory, got none")
+	}
+	for _, u := range target.Inventory.URLs {
+		if u.Source != "admin-probe" {
+			continue
+		}
+		if u.ResponseStatus == 0 {
+			t.Errorf("URL %s: ResponseStatus not set (got 0)", u.URL)
+		}
+		if u.BodyHash == "" {
+			t.Errorf("URL %s: BodyHash not set", u.URL)
+		}
+	}
+}
+
 func TestUniqueOrigins(t *testing.T) {
 	inv := &crawler.Inventory{
 		URLs: []*crawler.DiscoveredURL{

@@ -20,6 +20,8 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -100,15 +102,17 @@ func (c *SwaggerCheck) Run(ctx context.Context, target *checks.Target) ([]*check
 			specURL := strings.TrimRight(origin, "/") + "/" + strings.TrimLeft(path, "/")
 
 			// Record every probed URL in the inventory for operator audit.
+			var du *crawler.DiscoveredURL
 			if target.Inventory != nil {
-				target.Inventory.URLs = append(target.Inventory.URLs, &crawler.DiscoveredURL{
-					URL:    specURL,
-					Source: "swagger-probe",
-					Depth:  0,
-				})
+				du = &crawler.DiscoveredURL{URL: specURL, Source: "swagger-probe", Depth: 0}
+				target.Inventory.URLs = append(target.Inventory.URLs, du)
 			}
 
-			f := probeSwaggerPath(ctx, target, specURL, wlSource)
+			f, status, hash := probeSwaggerPath(ctx, target, specURL, wlSource)
+			if du != nil {
+				du.ResponseStatus = status
+				du.BodyHash = hash
+			}
 			if f != nil {
 				findings = append(findings, f)
 			}
@@ -120,36 +124,40 @@ func (c *SwaggerCheck) Run(ctx context.Context, target *checks.Target) ([]*check
 }
 
 // probeSwaggerPath fetches specURL and, if it looks like an OpenAPI spec,
-// inventories its endpoints and returns a finding.
-func probeSwaggerPath(ctx context.Context, target *checks.Target, specURL, wlSource string) *checks.Finding {
+// inventories its endpoints and returns a finding. The second and third return
+// values are the HTTP status code and hex body hash, used to update the probe
+// URL's entry in urls_discovered.
+func probeSwaggerPath(ctx context.Context, target *checks.Target, specURL, wlSource string) (*checks.Finding, int, string) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, specURL, nil)
 	if err != nil {
-		return nil
+		return nil, 0, ""
 	}
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := target.HTTP.Do(ctx, req)
 	if err != nil {
-		return nil
+		return nil, 0, ""
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil
-	}
-
+	status := resp.StatusCode
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 2*1024*1024)) // 2 MB limit
 	if err != nil {
-		return nil
+		return nil, status, ""
+	}
+	bodyHash := swaggerHashBody(body)
+
+	if status != http.StatusOK {
+		return nil, status, bodyHash
 	}
 
 	if !looksLikeOpenAPISpec(body) {
-		return nil
+		return nil, status, bodyHash
 	}
 
 	var spec openAPISpec
 	if err := json.Unmarshal(body, &spec); err != nil {
-		return nil
+		return nil, status, bodyHash
 	}
 
 	// Determine spec version.
@@ -160,7 +168,7 @@ func probeSwaggerPath(ctx context.Context, target *checks.Target, specURL, wlSou
 
 	pathCount := len(spec.Paths)
 	if pathCount == 0 {
-		return nil
+		return nil, status, bodyHash
 	}
 
 	// Add discovered endpoints to inventory.
@@ -189,7 +197,17 @@ func probeSwaggerPath(ctx context.Context, target *checks.Target, specURL, wlSou
 			ResponseBytes:  evidence,
 		},
 		WordlistSource: wlSource,
+	}, status, bodyHash
+}
+
+// swaggerHashBody returns the hex SHA-256 of up to 32 KB of body.
+func swaggerHashBody(body []byte) string {
+	const limit = 32 * 1024
+	if len(body) > limit {
+		body = body[:limit]
 	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
 }
 
 // looksLikeOpenAPISpec performs a quick heuristic check before full JSON parsing.

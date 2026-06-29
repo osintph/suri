@@ -126,6 +126,21 @@ func (c *Crawler) Crawl(ctx context.Context, seedURLs []string) (*Inventory, err
 		mu.Unlock()
 	}
 
+	// addToInv records a URL in the inventory without enqueuing it for a fetch.
+	// It is used for redirect targets that have already been fetched inline.
+	// Concurrent-safe: holds mu for the duration.
+	addToInv := func(rawURL, source string, depth int) {
+		mu.Lock()
+		defer mu.Unlock()
+		if visited[rawURL] || len(inv.URLs) >= c.cfg.MaxURLs {
+			return
+		}
+		visited[rawURL] = true
+		du := &DiscoveredURL{URL: rawURL, Source: source, Depth: depth}
+		inv.URLs = append(inv.URLs, du)
+		urlReg[rawURL] = du
+	}
+
 	// Fixed worker pool: workers read from queue, call process, then wg.Done().
 	// This avoids the deadlock that occurs when goroutines holding a semaphore
 	// slot try to acquire another slot to dispatch children.
@@ -135,7 +150,7 @@ func (c *Crawler) Crawl(ctx context.Context, seedURLs []string) (*Inventory, err
 		go func() {
 			defer workerWg.Done()
 			for item := range queue {
-				c.process(ctx, item.url, item.depth, inv, &mu, dispatch, updateMeta)
+				c.process(ctx, item.url, item.depth, inv, &mu, dispatch, updateMeta, addToInv)
 				wg.Done()
 			}
 		}()
@@ -159,7 +174,7 @@ func (c *Crawler) Crawl(ctx context.Context, seedURLs []string) (*Inventory, err
 }
 
 // process fetches a single URL, updates the inventory, and dispatches new URLs.
-func (c *Crawler) process(ctx context.Context, rawURL string, depth int, inv *Inventory, mu *sync.Mutex, dispatch func(string, string, int), updateMeta func(string, int, string)) {
+func (c *Crawler) process(ctx context.Context, rawURL string, depth int, inv *Inventory, mu *sync.Mutex, dispatch func(string, string, int), updateMeta func(string, int, string), addToInv func(string, string, int)) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -192,51 +207,66 @@ func (c *Crawler) process(ctx context.Context, rawURL string, depth int, inv *In
 		return
 	}
 
-	// Record response status and body hash now that we have the full body.
-	updateMeta(rawURL, resp.StatusCode, computeBodyHash(body))
+	// Determine the effective URL and base after any redirects.
+	// Go's HTTP client follows redirects transparently; resp.Request.URL is the
+	// final URL the response came from.
+	effectiveURL := rawURL
+	effectiveBase := base
+	if finalURLStr := resp.Request.URL.String(); finalURLStr != rawURL && c.inScope(finalURLStr) {
+		// Add the redirect target to the inventory without re-queuing it. We
+		// already have its response body so there is no need to fetch it again.
+		addToInv(finalURLStr, "redirect-target", depth)
+		updateMeta(finalURLStr, resp.StatusCode, computeBodyHash(body))
+		effectiveURL = finalURLStr
+		effectiveBase = resp.Request.URL
+		// rawURL (the redirect source) keeps ResponseStatus == 0 because we
+		// never received a direct response for it.
+	} else {
+		updateMeta(rawURL, resp.StatusCode, computeBodyHash(body))
+	}
 
 	ct := resp.Header.Get("Content-Type")
-	path := base.Path
+	path := effectiveBase.Path
 
 	switch {
 	case isHTML(ct):
-		c.processHTML(rawURL, base, depth, body, inv, mu, dispatch)
+		c.processHTML(effectiveURL, effectiveBase, depth, body, inv, mu, dispatch)
 	case isJS(ct, path):
-		arts := MineJS(rawURL, body)
+		arts := MineJS(effectiveURL, body)
 		mu.Lock()
 		inv.JSArtifacts = append(inv.JSArtifacts, arts...)
 		mu.Unlock()
 		for _, a := range arts {
-			if abs := jsArtifactURL(base, a); abs != "" && c.inScope(abs) {
+			if abs := jsArtifactURL(effectiveBase, a); abs != "" && c.inScope(abs) {
 				dispatch(abs, "js", depth+1)
 			}
 		}
 	case isXML(ct, path):
 		res, err := ParseSitemap(body)
 		if err != nil {
-			slog.Debug("sitemap parse error", "url", rawURL, "err", err)
+			slog.Debug("sitemap parse error", "url", effectiveURL, "err", err)
 			return
 		}
 		for _, u := range res.PageURLs {
-			if abs := toAbsolute(base, u); abs != "" && c.inScope(abs) {
+			if abs := toAbsolute(effectiveBase, u); abs != "" && c.inScope(abs) {
 				dispatch(abs, "sitemap", depth+1)
 			}
 		}
 		for _, child := range res.ChildSitemaps {
-			if abs := toAbsolute(base, child); abs != "" && c.inScope(abs) {
+			if abs := toAbsolute(effectiveBase, child); abs != "" && c.inScope(abs) {
 				dispatch(abs, "sitemap", depth)
 			}
 		}
 	case isRobots(path):
 		res := ParseRobots(body)
 		for _, p := range res.DisallowPaths {
-			abs := base.Scheme + "://" + base.Host + p
+			abs := effectiveBase.Scheme + "://" + effectiveBase.Host + p
 			if c.inScope(abs) {
 				dispatch(abs, "robots", depth+1)
 			}
 		}
 		for _, sm := range res.SitemapURLs {
-			if abs := toAbsolute(base, sm); abs != "" && c.inScope(abs) {
+			if abs := toAbsolute(effectiveBase, sm); abs != "" && c.inScope(abs) {
 				dispatch(abs, "robots", depth)
 			}
 		}

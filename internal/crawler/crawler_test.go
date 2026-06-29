@@ -182,6 +182,91 @@ func TestCrawlRespectsMaxURLs(t *testing.T) {
 	}
 }
 
+// TestCrawlerRedirectInventoriesBothURLs verifies that when a 302 redirect is
+// followed, both the original URL and the redirect target appear in the inventory.
+func TestCrawlerRedirectInventoriesBothURLs(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, srv.URL+"/login.php", http.StatusFound)
+		case "/login.php":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<!DOCTYPE html><html><body><h1>Login</h1></body></html>`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	sc := localhostScope()
+	client := internalhttp.New(sc)
+	cfg := Config{MaxDepth: 2, MaxURLs: 50, Concurrency: 2, RatePerHost: 100}
+	cr := New(sc, client, cfg)
+
+	inv, err := cr.Crawl(context.Background(), []string{srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("Crawl: %v", err)
+	}
+
+	urlSet := make(map[string]bool)
+	for _, u := range inv.URLs {
+		urlSet[u.URL] = true
+	}
+
+	if !urlSet[srv.URL+"/"] {
+		t.Errorf("seed URL %s not in inventory", srv.URL+"/")
+	}
+	if !urlSet[srv.URL+"/login.php"] {
+		t.Errorf("redirect target %s/login.php not in inventory", srv.URL)
+	}
+}
+
+// TestCrawlerRedirectExtractsLinksFromTarget verifies that when a redirect is
+// followed, links in the redirect target's body are extracted and crawled.
+func TestCrawlerRedirectExtractsLinksFromTarget(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/":
+			http.Redirect(w, r, srv.URL+"/login.php", http.StatusFound)
+		case "/login.php":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<!DOCTYPE html><html><body>
+<a href="/setup.php">Setup</a>
+</body></html>`))
+		case "/setup.php":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(`<!DOCTYPE html><html><body>Setup page</body></html>`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+
+	sc := localhostScope()
+	client := internalhttp.New(sc)
+	cfg := Config{MaxDepth: 3, MaxURLs: 50, Concurrency: 2, RatePerHost: 100}
+	cr := New(sc, client, cfg)
+
+	inv, err := cr.Crawl(context.Background(), []string{srv.URL + "/"})
+	if err != nil {
+		t.Fatalf("Crawl: %v", err)
+	}
+
+	urlSet := make(map[string]bool)
+	for _, u := range inv.URLs {
+		urlSet[u.URL] = true
+	}
+
+	if !urlSet[srv.URL+"/setup.php"] {
+		t.Errorf("link /setup.php from redirect target was not discovered; inventory: %v", urlSet)
+	}
+}
+
 func TestCrawlOutOfScopeLinksIgnored(t *testing.T) {
 	srv := newTestServer(t)
 	defer srv.Close()
