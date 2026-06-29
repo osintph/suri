@@ -19,22 +19,55 @@ Suri does not exploit vulnerabilities. Detection only: it reports that a paramet
 
 ## Installation
 
-### Download a release binary
+### macOS
 
-Download the archive for your platform from the [releases page](https://github.com/osintph/suri/releases), extract it, and move the `suri` binary onto your `PATH`.
+Install via Homebrew:
 
 ```bash
-# Example for Linux amd64
-tar -xzf suri_0.1.0_linux_amd64.tar.gz
+brew tap osintph/tap
+brew trust osintph/tap
+brew install suri
+```
+
+On first run, macOS Gatekeeper will block the unsigned binary.
+Clear the quarantine flag once:
+
+```bash
+sudo xattr -d com.apple.quarantine $(which suri)
+```
+
+Verify:
+
+```bash
+suri --version
+```
+
+These extra steps will go away in a future release once the binary
+is signed and notarized with an Apple Developer ID.
+
+### Linux
+
+Download the appropriate binary from the
+[releases page](https://github.com/osintph/suri/releases) and extract:
+
+```bash
+wget https://github.com/osintph/suri/releases/download/v0.1.1/suri_0.1.1_linux_amd64.tar.gz
+tar xzf suri_0.1.1_linux_amd64.tar.gz
 sudo mv suri /usr/local/bin/
 suri --version
 ```
 
-### Install with go install
+Or install from source with Go 1.23+:
 
 ```bash
 go install github.com/osintph/suri/cmd/suri@latest
 ```
+
+### Windows
+
+Download the Windows binary from the
+[releases page](https://github.com/osintph/suri/releases),
+extract the zip, and add the directory to your PATH.
 
 ### Build from source
 
