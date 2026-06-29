@@ -29,8 +29,8 @@ import (
 	"unicode"
 
 	"github.com/osintph/suri/internal/checks"
-	internalhttp "github.com/osintph/suri/internal/http"
 	"github.com/osintph/suri/internal/crawler"
+	internalhttp "github.com/osintph/suri/internal/http"
 )
 
 // BackupsCheck probes for backup file exposure. For each URL already in the
@@ -289,11 +289,11 @@ func (c *BackupsCheck) makeFinding(
 	}
 
 	ev := &checks.Evidence{
-		ResponseStatus:  status,
-		ResponseBytes:   excerpt(backupBody, 200),
-		OriginalURL:     originalURL,
-		BackupBodyHash:  backupHash,
-		JaccardScore:    jaccardScore,
+		ResponseStatus: status,
+		ResponseBytes:  excerpt(backupBody, 200),
+		OriginalURL:    originalURL,
+		BackupBodyHash: backupHash,
+		JaccardScore:   jaccardScore,
 	}
 	if originalURL != "" {
 		// origHash is computed inside fetchOriginal and not easily accessible here;

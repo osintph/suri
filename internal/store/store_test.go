@@ -216,10 +216,10 @@ func TestSaveInventory(t *testing.T) {
 	}
 
 	counts := map[string]int{
-		"urls_discovered":        2,
-		"forms_discovered":       1,
-		"parameters_discovered":  2,
-		"js_artifacts":           1,
+		"urls_discovered":       2,
+		"forms_discovered":      1,
+		"parameters_discovered": 2,
+		"js_artifacts":          1,
 	}
 	for tbl, want := range counts {
 		var got int

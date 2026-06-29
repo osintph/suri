@@ -34,11 +34,11 @@ func webTarget(srv *httptest.Server) *checks.Target {
 		IPs:       []string{"127.0.0.1"},
 	}
 	return &checks.Target{
-		Inventory:   &crawler.Inventory{},
-		Scope:       sc,
-		HTTP:        internalhttp.New(sc),
-		SeedURLs:    []string{srv.URL},
-		Canary:      "deadbeef",
+		Inventory: &crawler.Inventory{},
+		Scope:     sc,
+		HTTP:      internalhttp.New(sc),
+		SeedURLs:  []string{srv.URL},
+		Canary:    "deadbeef",
 	}
 }
 

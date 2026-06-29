@@ -40,23 +40,23 @@ func (c *RedirectCheck) Category() checks.Category { return checks.CategoryWeb }
 // redirectParamNames lists URL parameter names that typically hold redirect
 // destinations. Only parameters with these names are probed.
 var redirectParamNames = map[string]bool{
-	"next":        true,
-	"redirect":    true,
-	"redirect_to": true,
+	"next":         true,
+	"redirect":     true,
+	"redirect_to":  true,
 	"redirect_uri": true,
-	"redirecturl": true,
-	"url":         true,
-	"return":      true,
-	"returnto":    true,
-	"returnurl":   true,
-	"dest":        true,
-	"destination": true,
-	"target":      true,
-	"location":    true,
-	"goto":        true,
-	"back":        true,
-	"forward":     true,
-	"continue":    true,
+	"redirecturl":  true,
+	"url":          true,
+	"return":       true,
+	"returnto":     true,
+	"returnurl":    true,
+	"dest":         true,
+	"destination":  true,
+	"target":       true,
+	"location":     true,
+	"goto":         true,
+	"back":         true,
+	"forward":      true,
+	"continue":     true,
 }
 
 // Run probes redirect-like parameters for open redirect.
@@ -143,4 +143,3 @@ func (c *RedirectCheck) Run(ctx context.Context, target *checks.Target) ([]*chec
 	}
 	return findings, nil
 }
-

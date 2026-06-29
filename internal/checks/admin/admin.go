@@ -18,9 +18,9 @@
 package admin
 
 import (
-	_ "embed"
 	"context"
 	"crypto/sha256"
+	_ "embed"
 	"encoding/hex"
 	"fmt"
 	"io"

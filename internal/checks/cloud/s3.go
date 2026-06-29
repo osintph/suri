@@ -39,10 +39,10 @@ type S3Check struct {
 	PathStyle bool
 }
 
-func (c *S3Check) ID() string                   { return "cloud.s3.public-list" }
-func (c *S3Check) Name() string                 { return "S3 Bucket Public List" }
-func (c *S3Check) Severity() checks.Severity    { return checks.SeverityHigh }
-func (c *S3Check) Category() checks.Category    { return checks.CategoryCloud }
+func (c *S3Check) ID() string                { return "cloud.s3.public-list" }
+func (c *S3Check) Name() string              { return "S3 Bucket Public List" }
+func (c *S3Check) Severity() checks.Severity { return checks.SeverityHigh }
+func (c *S3Check) Category() checks.Category { return checks.CategoryCloud }
 
 // Run probes candidate S3 buckets. It combines passive extraction from JS
 // artifacts already in the inventory with active permutation from the target

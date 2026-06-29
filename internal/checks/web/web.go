@@ -20,9 +20,9 @@
 package web
 
 import (
-	_ "embed"
 	"bytes"
 	"context"
+	_ "embed"
 	"fmt"
 	"io"
 	"net/http"

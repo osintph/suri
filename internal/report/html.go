@@ -71,15 +71,15 @@ type reportSummary struct {
 }
 
 type htmlFinding struct {
-	SeverityClass   string
-	Severity        string
-	Confidence      string
-	Title           string
-	URL             string
-	Parameter       string
-	Description     string
-	CWE             string
-	OWASP           string
+	SeverityClass string
+	Severity      string
+	Confidence    string
+	Title         string
+	URL           string
+	Parameter     string
+	Description   string
+	CWE           string
+	OWASP         string
 	// CurlCmd is pre-sanitised and marked safe so single quotes render literally.
 	CurlCmd         template.HTML
 	HasEvidence     bool

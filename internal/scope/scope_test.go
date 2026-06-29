@@ -369,74 +369,74 @@ func TestCloudBucketMatchesEdgeCases(t *testing.T) {
 
 func TestProviderAuthorisation(t *testing.T) {
 	cases := []struct {
-		name     string
-		buckets  []string
-		wantS3   bool
+		name      string
+		buckets   []string
+		wantS3    bool
 		wantAzure bool
-		wantGCS  bool
+		wantGCS   bool
 	}{
 		{
-			name:     "s3 patterns only",
-			buckets:  []string{"*.s3.amazonaws.com", "*.s3.*.amazonaws.com"},
-			wantS3:   true,
+			name:      "s3 patterns only",
+			buckets:   []string{"*.s3.amazonaws.com", "*.s3.*.amazonaws.com"},
+			wantS3:    true,
 			wantAzure: false,
-			wantGCS:  false,
+			wantGCS:   false,
 		},
 		{
-			name:     "s3 via broad amazonaws",
-			buckets:  []string{"*.amazonaws.com"},
-			wantS3:   true,
+			name:      "s3 via broad amazonaws",
+			buckets:   []string{"*.amazonaws.com"},
+			wantS3:    true,
 			wantAzure: false,
-			wantGCS:  false,
+			wantGCS:   false,
 		},
 		{
-			name:     "azure only",
-			buckets:  []string{"*.blob.core.windows.net"},
-			wantS3:   false,
+			name:      "azure only",
+			buckets:   []string{"*.blob.core.windows.net"},
+			wantS3:    false,
 			wantAzure: true,
-			wantGCS:  false,
+			wantGCS:   false,
 		},
 		{
-			name:     "gcs exact host",
-			buckets:  []string{"storage.googleapis.com"},
-			wantS3:   false,
+			name:      "gcs exact host",
+			buckets:   []string{"storage.googleapis.com"},
+			wantS3:    false,
 			wantAzure: false,
-			wantGCS:  true,
+			wantGCS:   true,
 		},
 		{
-			name:     "gcs wildcard",
-			buckets:  []string{"*.googleapis.com"},
-			wantS3:   false,
+			name:      "gcs wildcard",
+			buckets:   []string{"*.googleapis.com"},
+			wantS3:    false,
 			wantAzure: false,
-			wantGCS:  true,
+			wantGCS:   true,
 		},
 		{
-			name:     "mixed s3 and azure",
-			buckets:  []string{"*.s3.amazonaws.com", "*.blob.core.windows.net"},
-			wantS3:   true,
+			name:      "mixed s3 and azure",
+			buckets:   []string{"*.s3.amazonaws.com", "*.blob.core.windows.net"},
+			wantS3:    true,
 			wantAzure: true,
-			wantGCS:  false,
+			wantGCS:   false,
 		},
 		{
-			name:     "all three providers",
-			buckets:  []string{"*.s3.amazonaws.com", "*.blob.core.windows.net", "storage.googleapis.com"},
-			wantS3:   true,
+			name:      "all three providers",
+			buckets:   []string{"*.s3.amazonaws.com", "*.blob.core.windows.net", "storage.googleapis.com"},
+			wantS3:    true,
 			wantAzure: true,
-			wantGCS:  true,
+			wantGCS:   true,
 		},
 		{
-			name:     "empty cloud_buckets",
-			buckets:  []string{},
-			wantS3:   false,
+			name:      "empty cloud_buckets",
+			buckets:   []string{},
+			wantS3:    false,
 			wantAzure: false,
-			wantGCS:  false,
+			wantGCS:   false,
 		},
 		{
-			name:     "127.0.0.1 only (no cloud provider)",
-			buckets:  []string{"127.0.0.1"},
-			wantS3:   false,
+			name:      "127.0.0.1 only (no cloud provider)",
+			buckets:   []string{"127.0.0.1"},
+			wantS3:    false,
 			wantAzure: false,
-			wantGCS:  false,
+			wantGCS:   false,
 		},
 	}
 

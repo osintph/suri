@@ -23,14 +23,14 @@ import (
 
 // sitemapURLSet is the standard sitemap format.
 type sitemapURLSet struct {
-	XMLName xml.Name      `xml:"urlset"`
-	URLs    []sitemapLoc  `xml:"url"`
+	XMLName xml.Name     `xml:"urlset"`
+	URLs    []sitemapLoc `xml:"url"`
 }
 
 // sitemapIndex is the sitemap index format that references child sitemaps.
 type sitemapIndex struct {
-	XMLName  xml.Name        `xml:"sitemapindex"`
-	Sitemaps []sitemapLoc    `xml:"sitemap"`
+	XMLName  xml.Name     `xml:"sitemapindex"`
+	Sitemaps []sitemapLoc `xml:"sitemap"`
 }
 
 type sitemapLoc struct {

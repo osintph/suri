@@ -26,10 +26,10 @@ import (
 
 // Config holds operator-level settings that persist across engagements.
 type Config struct {
-	OutputDir    string `toml:"output_dir"`
-	LogFile      string `toml:"log_file"`
-	Threads      int    `toml:"threads"`
-	RateLimit    int    `toml:"rate_limit"`
+	OutputDir string `toml:"output_dir"`
+	LogFile   string `toml:"log_file"`
+	Threads   int    `toml:"threads"`
+	RateLimit int    `toml:"rate_limit"`
 }
 
 // Default returns a Config with sensible values for running without a config file.

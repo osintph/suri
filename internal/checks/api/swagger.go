@@ -37,8 +37,8 @@ import (
 
 // openAPISpec holds the fields we extract from Swagger 2.0 and OpenAPI 3.x specs.
 type openAPISpec struct {
-	Swagger  string `json:"swagger"` // "2.0"
-	OpenAPI  string `json:"openapi"` // "3.0.x"
+	Swagger  string `json:"swagger"`  // "2.0"
+	OpenAPI  string `json:"openapi"`  // "3.0.x"
 	BasePath string `json:"basePath"` // Swagger 2.0
 	Info     struct {
 		Title   string `json:"title"`

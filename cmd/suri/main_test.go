@@ -55,11 +55,11 @@ ips             = ["127.0.0.1"]
 	code := runScan(
 		ctx,
 		scopeFile, slowSrv.URL, dbPath,
-		"",  // domain
+		"",         // domain
 		"", "", "", // s3/azure/gcs endpoints
-		"",  // admin wordlist
-		0,   // maxBackupProbes
-		1,   // threads
+		"",    // admin wordlist
+		0,     // maxBackupProbes
+		1,     // threads
 		false, // includeInfo
 		crawler.Config{MaxDepth: 1, MaxURLs: 10, Concurrency: 1, RatePerHost: 100},
 		100*time.Millisecond, // scan timeout

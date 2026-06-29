@@ -1,126 +1,268 @@
 # Suri
 
-Suri is a web application security scanner for authorized VAPT (Vulnerability Assessment and Penetration Testing) engagements. It targets web applications, admin panels, APIs, and exposed cloud storage. All scans are scope-enforced: every request passes through a scope checker that refuses traffic to hosts not listed in the engagement scope file.
+Web application security scanner for authorized VAPT engagements.
 
-**Status: v0.1.0 in development**
+[![CI](https://github.com/osintph/suri/actions/workflows/ci.yml/badge.svg)](https://github.com/osintph/suri/actions/workflows/ci.yml)
+[![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
 
-Suri is part of the OSINT-PH brand suite alongside FalconEye and Salakay.
+---
 
-## Build
+## What Suri is
 
-Requires Go 1.23 or later.
+Suri is a single static binary that crawls a web application, runs a suite of checks against the discovered surface, and writes findings to a SQLite database. It targets web applications, admin panels, REST APIs, and cloud storage. Every outbound request is validated against an engagement scope file before it is sent: if the host is not in scope, the request is blocked and logged. Findings are written in HTML and JSON formats suitable for client deliverables. A diff engine compares consecutive scans to show what changed between assessments.
+
+## What Suri is NOT
+
+Suri does not exploit vulnerabilities. Detection only: it reports that a parameter appears injectable but does not extract data or escalate access. It does not support authenticated sessions in v1 (no cookie injection, no CSRF token handling). It does not execute JavaScript and does not use a headless browser. All checks are safe to run against production systems during an authorized engagement window.
+
+---
+
+## Installation
+
+### Download a release binary
+
+Download the archive for your platform from the [releases page](https://github.com/osintph/suri/releases), extract it, and move the `suri` binary onto your `PATH`.
+
+```bash
+# Example for Linux amd64
+tar -xzf suri_0.1.0_linux_amd64.tar.gz
+sudo mv suri /usr/local/bin/
+suri --version
+```
+
+### Install with go install
+
+```bash
+go install github.com/osintph/suri/cmd/suri@latest
+```
+
+### Build from source
 
 ```bash
 git clone git@github.com:osintph/suri.git
 cd suri
 go build -o suri ./cmd/suri
+./suri --version
 ```
 
-Cross-compilation targets:
+Requires Go 1.25 or later. No CGO dependencies.
+
+---
+
+## Quickstart
+
+**Step 1: write a scope file.**
+
+```toml
+# engagement.toml
+engagement_name = "target-corp-2026-q3"
+notes           = "Authorized VAPT. Contact: security@target.example.com"
+
+hostnames = [
+  "target.example.com",
+  "*.target.example.com",
+]
+```
+
+**Step 2: run a scan.**
 
 ```bash
-GOOS=linux   GOARCH=amd64 go build -o suri-linux-amd64   ./cmd/suri
-GOOS=linux   GOARCH=arm64 go build -o suri-linux-arm64   ./cmd/suri
-GOOS=darwin  GOARCH=arm64 go build -o suri-darwin-arm64  ./cmd/suri
-GOOS=windows GOARCH=amd64 go build -o suri-windows-amd64.exe ./cmd/suri
+./suri scan --scope engagement.toml https://target.example.com
 ```
 
-## Usage
+Output at the end of the scan:
+
+```
+Scan complete
+  URLs discovered:      47
+  Forms found:          3
+  Unique parameters:    12
+  JS artifacts:         8
+  Findings:             2 (info: 14 suppressed)
+  DB: /tmp/suri-out/a3f2c1d0-....db
+```
+
+**Step 3: generate a report.**
+
+Copy the scan ID from the `DB:` line (the UUID portion of the filename).
 
 ```bash
-# Scan a target (scope file is required)
-suri scan --scope examples/scope.toml https://target.example.com
-
-# View other subcommands
-suri --help
+./suri report --scan a3f2c1d0-... --format html --out report.html
 ```
 
-See `examples/scope.toml` for scope file format and `examples/config.toml` for operator config.
-
-## Testing against S3-compatible storage (Minio, Backblaze, etc)
-
-Cloud checks support any S3-compatible endpoint via `--s3-endpoint`. The endpoint
-host must appear in the scope file's `cloud_buckets` list to satisfy the
-authorisation gate.
-
-Example using a local Minio server (`examples/scope-minio-local.toml` pre-configures
-`localhost` and `127.0.0.1` in `cloud_buckets`):
+Open `report.html` in a browser. For a machine-readable output:
 
 ```bash
-./suri scan \
-  --scope examples/scope-minio-local.toml \
-  --s3-endpoint http://localhost:9000 \
-  --domain osintph-suri-test \
-  http://localhost:3000
+./suri report --scan a3f2c1d0-... --format json --out report.json
 ```
 
-The `--s3-endpoint` flag overrides the `s3_endpoint` field in the scope file.
-Equivalent flags exist for Azure Blob-compatible storage (`--azure-endpoint`) and
-GCS-compatible storage (`--gcs-endpoint`).
+---
 
-## Admin path discovery
+## Scope file format
 
-The admin check probes two tiers.
+Each engagement gets its own scope file. The scope file is not a config file: it defines the legal boundary for the scan. Keep it outside version control alongside your findings.
 
-**Interesting paths** (`internal/checks/admin/interesting-paths.toml`) is a structured TOML catalogue of ~50 hand-curated entries: `.git/HEAD`, `.env`, `.htpasswd`, `wp-config.php`, `id_rsa`, and similar. Each entry carries content patterns for response body verification. A 200 response is only flagged when the body matches at least one pattern, which eliminates false positives from SPA catch-all routing. A 401, 403, or 5xx response emits a finding without content verification (the path exists but access is restricted). 404 is always skipped.
+```toml
+# Required. Short identifier used in log output and report headings.
+engagement_name = "acme-vapt-2026-q1"
 
-**Common admin paths** (`admin-common.txt`) is the general discovery wordlist. Responses are emitted as `info/tentative` (200) or `info/firm` (401, 403, 5xx). These are suppressed from the default summary.
+# Optional free-form notes.
+notes = "Authorized VAPT for Acme Corp Q1 2026."
 
-Use `--include-info` to show all findings including the info tier:
+# Hostnames in scope. Supports leftmost-label wildcard only:
+# *.example.com matches api.example.com but not example.com itself
+# and not sub.api.example.com.
+hostnames = [
+  "example.com",
+  "*.example.com",
+]
+
+# Individual IPs in scope.
+ips = ["203.0.113.10"]
+
+# CIDR ranges in scope. Every IP within the range is allowed.
+cidrs = ["10.10.0.0/24"]
+
+# Port restriction. Empty list means all ports are in scope.
+# Port is derived from the URL scheme (80 for http, 443 for https)
+# unless an explicit port is present in the URL.
+ports = [80, 443, 8080, 8443]
+
+# Cloud storage check authorization. Cloud checks refuse to run
+# unless the target bucket host matches an entry here.
+# Supports the same wildcard syntax as hostnames, plus * spanning
+# multiple labels (e.g. *.s3.*.amazonaws.com).
+cloud_buckets = [
+  "*.s3.amazonaws.com",
+  "*.blob.core.windows.net",
+  "*.storage.googleapis.com",
+]
+
+# Optional: custom endpoint for S3-compatible storage (Minio, Backblaze, etc).
+# The CLI --s3-endpoint flag takes precedence over this value.
+s3_endpoint    = ""
+azure_endpoint = ""
+gcs_endpoint   = ""
+```
+
+---
+
+## What Suri checks
+
+**Cloud storage**
+- S3 bucket exposure: anonymous list and read via virtual-hosted and path-style addressing
+- Azure Blob container anonymous access
+- Google Cloud Storage bucket anonymous access
+- Bucket name permutation from the target domain
+
+**Admin panel and sensitive path discovery**
+- Interesting paths (`.git/HEAD`, `.env`, `.htpasswd`, `wp-config.php`, etc.): content-verified against known patterns; soft-200 SPA responses are not flagged
+- Common admin paths: wordlist-based, results reported as info/tentative unless access is denied (401, 403)
+
+**API discovery**
+- Swagger and OpenAPI spec discovery; parses found specs and inventories endpoints
+- GraphQL introspection: flags open introspection as a finding
+
+**Web injection**
+- Reflected XSS: canary-based payload with context detection (HTML, attribute, JS, URL contexts)
+- SQL injection: error-based (DB error string detection) and time-based (sleep payload with baseline comparison)
+- Server-side template injection: canary expression evaluation for Jinja2, Twig, Freemarker, ERB
+- Command injection: time-based sleep payloads only
+- Open redirect: canary URL injection
+
+**Security headers**
+- CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy
+
+**Backup and source exposure**
+- `.git/HEAD`, `.env`, swap files, `.DS_Store`, source maps, common backup extensions
+- Content-verified; SPA catch-all responses are filtered by body hash deduplication
+
+---
+
+## Output formats
+
+By default the scan summary shows findings at medium severity or above. Info-severity findings are written to the database but suppressed from the summary line.
 
 ```bash
-# Default: shows medium-or-higher findings only; info count reported separately
-suri scan --scope scope.toml https://target.example.com
-
-# Show all findings including info/tentative from the common wordlist
-suri scan --scope scope.toml --include-info https://target.example.com
+# Show info findings in the summary
+suri scan --scope engagement.toml --include-info https://target.example.com
 ```
 
-## Scanning behaviour
-
-Suri is designed to be polite by default and to avoid disrupting production systems during authorized assessments.
-
-### Scan-wide timeout
-
-Every scan has a hard wall-clock limit controlled by `--scan-timeout` (default: 15 minutes). When the timeout fires:
-
-- In-flight HTTP requests complete or expire per the per-request timeout (10 seconds).
-- No new check probes start.
-- All findings discovered before the timeout are written to the database.
-- The scan exits with status 124 and prints `scan stopped after timeout, partial results in <db>`.
-
-Adjust the timeout for large targets:
+Generate reports from any past scan using its ID:
 
 ```bash
-suri scan --scope scope.toml --scan-timeout 60m https://target.example.com
+suri report --scan <id> --format html --out report.html
+suri report --scan <id> --format json --out report.json
 ```
 
-### Backup file check throttling
-
-The backup file check (`web.backup.file`) derives probe URLs from the crawler inventory. On large SPAs the inventory can hold thousands of URLs; probing each with four backup extensions would generate tens of thousands of requests.
-
-Three mitigations are applied automatically:
-
-1. **Status filter.** Only URLs that the crawler fetched with HTTP status 200, 401, or 403 are probed. 404s and 5xx responses indicate the path does not exist as a real route, so probing backup variants would be wasteful.
-
-2. **SPA shell deduplication.** The crawler records the SHA-256 of the first 32 KB of each response body. If many URLs on the same host share the same body hash (the Angular/React/Vue shell HTML), that hash is identified as the SPA catch-all and those URLs are excluded from backup probing.
-
-3. **Total probe cap.** The backup check makes at most 200 HTTP probes per scan by default. When the cap is reached a warning is logged. Override with `--max-backup-probes`:
+The `--db` flag overrides the default database lookup (most recent `.db` in the current directory):
 
 ```bash
-suri scan --scope scope.toml --max-backup-probes 50 https://target.example.com
+suri report --scan <id> --db /path/to/scans.db --format html --out report.html
 ```
 
-### Timing-based check serialisation
+HTML reports are self-contained single files with inline CSS. No external resources. A Content-Security-Policy meta tag prevents execution of any script content found in evidence.
 
-The SQL injection and command injection checks use sleep-based timing payloads to detect blind vulnerabilities. To avoid stacking multiple concurrent sleep requests against the same host (which can exhaust server thread pools), timing probes are serialised per host: only one sleep payload is in-flight on any single host at a time. Probes against different hosts run in parallel as normal.
+JSON reports include base64-encoded request and response evidence and are suitable for ingestion by other tooling.
 
-## Wordlists
+---
 
-See [WORDLISTS.md](WORDLISTS.md) for attribution and licensing of embedded wordlists.
+## Diff engine
+
+Run a second scan after remediations and compare:
+
+```bash
+# First scan
+suri scan --scope engagement.toml https://target.example.com
+# Note scan ID printed at end: abc123...
+
+# Re-scan after remediation
+suri scan --scope engagement.toml https://target.example.com
+# Note new scan ID: def456...
+
+# Diff report
+suri diff --baseline abc123... --current def456... --format html --out diff.html
+```
+
+The diff report groups findings into:
+- **New**: appeared in the current scan but not in the baseline
+- **Persistent**: present in both scans (not yet remediated)
+- **Resolved**: present in the baseline but absent from the current scan
+
+---
+
+## Polite scanning principles
+
+Suri is designed for authorized assessments against production systems.
+
+**Rate limiting.** The default is 10 requests per second per host. Override with `--rate`.
+
+**Scan timeout.** The default is 15 minutes. The scan stops cleanly at the limit and writes all findings collected up to that point. Override with `--scan-timeout`. Exit status 124 indicates a timeout.
+
+**Serialised timing probes.** SQL injection and command injection timing checks use sleep-based payloads. Only one sleep payload is in-flight against any single host at a time, so the checks cannot exhaust backend thread pools. Probes against different hosts run in parallel.
+
+**Content verification.** Admin path discovery and backup file checks verify response body content before emitting findings, filtering out SPA catch-all 200 responses.
+
+---
+
+## Legal disclaimer
+
+**Suri is for authorized use only.**
+
+Running Suri against systems you do not own or do not have explicit written permission to test is illegal in most jurisdictions and is a violation of the AGPL license under which Suri is distributed. Every scan requires a scope file that declares the engagement. The scope file is a record that you have identified the legal boundary of your assessment. If you are unsure whether you have authorization, do not run Suri.
+
+---
+
+## Contributing
+
+Bug reports and feature requests: [github.com/osintph/suri/issues](https://github.com/osintph/suri/issues).
+
+Suri is licensed under the AGPL-3.0. Contributions must be made under the same license. By submitting a pull request you agree that your contribution is licensed to the project under AGPL-3.0.
+
+See [WORDLISTS.md](WORDLISTS.md) for wordlist attribution and licensing.
+
+---
 
 ## License
 
-Suri is free software: you can redistribute it and/or modify it under the terms of the
-GNU Affero General Public License as published by the Free Software Foundation, version 3.
-See [LICENSE](LICENSE) for the full text.
+Suri is free software: you can redistribute it and/or modify it under the terms of the GNU Affero General Public License as published by the Free Software Foundation, version 3. See [LICENSE](LICENSE) for the full text.

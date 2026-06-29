@@ -46,7 +46,7 @@ func TestMineJSFromFixture(t *testing.T) {
 		typ  string
 		want int
 	}{
-		{"api-path", 2},  // /api/v1/users, /api/v1/admin/roles
+		{"api-path", 2}, // /api/v1/users, /api/v1/admin/roles
 		{"s3", 1},
 		{"azure-blob", 1},
 		{"gcs", 1},

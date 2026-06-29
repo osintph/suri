@@ -35,33 +35,47 @@ import (
 	"github.com/osintph/suri/internal/config"
 	"github.com/osintph/suri/internal/crawler"
 	internalhttp "github.com/osintph/suri/internal/http"
-	"github.com/osintph/suri/internal/scope"
 	"github.com/osintph/suri/internal/report"
+	"github.com/osintph/suri/internal/scope"
 	"github.com/osintph/suri/internal/store"
 	"github.com/osintph/suri/internal/wordlists"
 )
 
-// Version is the binary version string embedded at build time.
-const Version = "0.1.0-dev"
+// version is set at build time via ldflags: -X main.version=<tag>.
+// The default "dev" is used for local builds outside the release pipeline.
+var version = "dev"
 
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
 
 	root := &cobra.Command{
-		Use:   "suri",
-		Short: "Web application security scanner for authorized VAPT engagements",
+		Use:               "suri",
+		Short:             "Web application security scanner for authorized VAPT engagements",
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
+		Version:           version,
 	}
+	root.SetVersionTemplate("suri {{.Version}}\n")
 
 	root.AddCommand(
 		newScanCmd(),
 		newReportCmd(),
 		newDiffCmd(),
 		newWordlistsCmd(),
+		newVersionCmd(),
 	)
 
 	if err := root.Execute(); err != nil {
 		os.Exit(1)
+	}
+}
+
+func newVersionCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "version",
+		Short: "Print the Suri version and exit",
+		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Printf("suri %s\n", version)
+		},
 	}
 }
 
@@ -111,7 +125,7 @@ func newReportCmd() *cobra.Command {
 			ctx := cmd.Context()
 			switch format {
 			case "html":
-				if err := report.RenderHTML(ctx, st, scanID, Version, f); err != nil {
+				if err := report.RenderHTML(ctx, st, scanID, version, f); err != nil {
 					return fmt.Errorf("rendering HTML report: %w", err)
 				}
 			case "json":
@@ -173,7 +187,7 @@ func newDiffCmd() *cobra.Command {
 			ctx := cmd.Context()
 			switch format {
 			case "html":
-				if err := report.RenderDiffHTML(ctx, st, baselineID, currentID, Version, f); err != nil {
+				if err := report.RenderDiffHTML(ctx, st, baselineID, currentID, version, f); err != nil {
 					return fmt.Errorf("rendering HTML diff: %w", err)
 				}
 			case "json":
@@ -412,7 +426,7 @@ func runScan(
 		ScopeFilePath:   scopePath,
 		ScopeSnapshotID: snapshotID,
 		SeedURLs:        []string{seedURL},
-		SuriVersion:     Version,
+		SuriVersion:     version,
 	}); err != nil {
 		fmt.Fprintf(os.Stderr, "error: cannot record scan: %v\n", err)
 		return 1
