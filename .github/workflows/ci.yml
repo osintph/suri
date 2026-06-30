@@ -26,6 +26,8 @@ jobs:
           if [ -n "$files" ]; then
             echo "Files not formatted with gofmt:"
             echo "$files"
+            echo ""
+            gofmt -d .
             exit 1
           fi
 

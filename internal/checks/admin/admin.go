@@ -34,8 +34,8 @@ import (
 	toml "github.com/pelletier/go-toml/v2"
 
 	"github.com/osintph/suri/internal/checks"
-	"github.com/osintph/suri/internal/crawler"
 	webcheck "github.com/osintph/suri/internal/checks/web"
+	"github.com/osintph/suri/internal/crawler"
 	"github.com/osintph/suri/internal/wordlists"
 )
 
