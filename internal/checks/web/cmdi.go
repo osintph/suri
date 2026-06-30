@@ -89,7 +89,7 @@ func (c *CMDiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 		// backend processing (DNS, DB lookup, file access, etc.) that the probe
 		// string would also trigger does not inflate the baseline. Two measurements
 		// are taken and the smaller is used to reduce single-sample noise.
-		originalVal := baselineValue(param.InjectURL, param.Name)
+		originalVal := baselineForParam(param)
 		baseReq1, err := buildProbeReq(ctx, param, originalVal)
 		if err != nil {
 			continue
@@ -184,18 +184,19 @@ func (c *CMDiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 			}
 
 			confirmed[key] = true
+			actualURL := findingInjectURL(param, injected)
 			findings = append(findings, &checks.Finding{
 				CheckID:    c.ID(),
 				Severity:   checks.SeverityHigh,
 				Confidence: checks.ConfidenceConfirmed,
-				Title:      fmt.Sprintf("Command injection (time-based) in parameter %q at %s", param.Name, param.InjectURL),
+				Title:      fmt.Sprintf("Command injection (time-based) in parameter %q at %s", param.Name, actualURL),
 				Description: fmt.Sprintf(
 					"The parameter %q at %s causes a measurable response delay (%v vs baseline %v) "+
 						"when injected with an OS sleep command via payload %q. "+
 						"This indicates the parameter value is passed to a shell without sanitization.",
-					param.Name, param.InjectURL, elapsed.Round(time.Millisecond), baseline.Round(time.Millisecond), p.Payload,
+					param.Name, actualURL, elapsed.Round(time.Millisecond), baseline.Round(time.Millisecond), p.Payload,
 				),
-				URL:       param.InjectURL,
+				URL:       actualURL,
 				Parameter: param.Name,
 				CWE:       "CWE-78",
 				OWASP:     "A03:2021",

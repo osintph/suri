@@ -21,6 +21,8 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 
 	"github.com/osintph/suri/internal/crawler"
@@ -93,5 +95,41 @@ func TestXSSCheckNoParameters(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings with empty inventory, got %d", len(findings))
+	}
+}
+
+func TestXSSPathParameterReflected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.TrimRight(r.URL.Path, "/"), "/")
+		raw := parts[len(parts)-1]
+		decoded, _ := url.PathUnescape(raw)
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, "<html><body>%s</body></html>", decoded)
+	}))
+	defer srv.Close()
+
+	template := srv.URL + "/api/user/lookup/{name}"
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: template, Name: "name", Source: "swagger-path", InjectURL: template},
+	}
+
+	ck := &XSSCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected XSS finding for path-param reflective server, got 0")
+	}
+	f := findings[0]
+	if f.CheckID != "web.xss.reflected" {
+		t.Errorf("unexpected check ID %q", f.CheckID)
+	}
+	if f.Parameter != "name" {
+		t.Errorf("expected parameter=name, got %q", f.Parameter)
+	}
+	if strings.Contains(f.URL, "{name}") {
+		t.Errorf("finding URL should be the actual injected URL, not the template; got %q", f.URL)
 	}
 }

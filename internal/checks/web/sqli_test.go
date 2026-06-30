@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -331,5 +332,42 @@ func TestTimingProbesParallelAcrossHosts(t *testing.T) {
 	maxExpected := 400 * time.Millisecond
 	if elapsed > maxExpected {
 		t.Errorf("timing probes across different hosts took %v (want < %v), may not be running in parallel", elapsed, maxExpected)
+	}
+}
+
+func TestSQLiPathParameterErrorBased(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.TrimRight(r.URL.Path, "/"), "/")
+		raw := parts[len(parts)-1]
+		decoded, _ := url.PathUnescape(raw)
+		if strings.Contains(decoded, "'") {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("You have an error in your SQL syntax"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("user info"))
+	}))
+	defer srv.Close()
+
+	template := srv.URL + "/api/db/lookup/{id}"
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: template, Name: "id", Source: "swagger-path", InjectURL: template},
+	}
+
+	ck := &SQLiCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected SQLi finding for path-param error-based server, got 0")
+	}
+	if findings[0].CheckID != "web.sqli.error" {
+		t.Errorf("expected web.sqli.error, got %q", findings[0].CheckID)
+	}
+	if findings[0].Parameter != "id" {
+		t.Errorf("expected parameter=id, got %q", findings[0].Parameter)
 	}
 }

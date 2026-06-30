@@ -109,18 +109,19 @@ func (c *SQLiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 			}
 
 			confirmed[key] = true
+			actualURL := findingInjectURL(param, injected)
 			findings = append(findings, &checks.Finding{
 				CheckID:    "web.sqli.error",
 				Severity:   checks.SeverityHigh,
 				Confidence: checks.ConfidenceConfirmed,
-				Title:      fmt.Sprintf("SQL injection (error-based) in parameter %q at %s", param.Name, param.InjectURL),
+				Title:      fmt.Sprintf("SQL injection (error-based) in parameter %q at %s", param.Name, actualURL),
 				Description: fmt.Sprintf(
 					"The parameter %q at %s returns a database error message when injected with "+
 						"SQL metacharacters. Error-based injection allows an attacker to enumerate "+
 						"schema, extract data, and in some configurations execute commands.",
-					param.Name, param.InjectURL,
+					param.Name, actualURL,
 				),
-				URL:       param.InjectURL,
+				URL:       actualURL,
 				Parameter: param.Name,
 				CWE:       "CWE-89",
 				OWASP:     "A03:2021",
@@ -141,7 +142,7 @@ func (c *SQLiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 
 		// Measure baseline using the parameter's original value (same reasoning as
 		// cmdi.go). Two measurements, use the smaller to reduce noise.
-		originalVal := baselineValue(param.InjectURL, param.Name)
+		originalVal := baselineForParam(param)
 		baseReq1, err := buildProbeReq(ctx, param, originalVal)
 		if err != nil {
 			continue
@@ -235,18 +236,19 @@ func (c *SQLiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 			}
 
 			confirmed[key] = true
+			timingURL := findingInjectURL(param, injected)
 			findings = append(findings, &checks.Finding{
 				CheckID:    "web.sqli.timing",
 				Severity:   checks.SeverityHigh,
 				Confidence: checks.ConfidenceConfirmed,
-				Title:      fmt.Sprintf("SQL injection (time-based) in parameter %q at %s", param.Name, param.InjectURL),
+				Title:      fmt.Sprintf("SQL injection (time-based) in parameter %q at %s", param.Name, timingURL),
 				Description: fmt.Sprintf(
 					"The parameter %q at %s causes a measurable response delay (%v vs baseline %v) "+
 						"when injected with a sleep-based SQL payload. Time-based blind injection "+
 						"allows data extraction character-by-character.",
-					param.Name, param.InjectURL, elapsed.Round(time.Millisecond), baseline.Round(time.Millisecond),
+					param.Name, timingURL, elapsed.Round(time.Millisecond), baseline.Round(time.Millisecond),
 				),
-				URL:       param.InjectURL,
+				URL:       timingURL,
 				Parameter: param.Name,
 				CWE:       "CWE-89",
 				OWASP:     "A03:2021",

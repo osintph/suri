@@ -147,6 +147,8 @@ func buildProbeReq(ctx context.Context, param *crawler.Parameter, payload string
 		return buildQueryProbeReq(ctx, param.InjectURL, param.Name, payload)
 	case "form":
 		return buildFormProbeReq(ctx, param, payload)
+	case "swagger-path":
+		return buildPathProbeReq(ctx, param.InjectURL, param.Name, payload)
 	default:
 		return nil, fmt.Errorf("unsupported parameter source %q", param.Source)
 	}
@@ -188,4 +190,14 @@ func baselineValue(injectURL, paramName string) string {
 		return ""
 	}
 	return u.Query().Get(paramName)
+}
+
+// baselineForParam returns a safe baseline probe value for param.
+// For path parameters there is no query string to extract an original value
+// from, so "1" is used as a placeholder unlikely to trigger backend latency.
+func baselineForParam(param *crawler.Parameter) string {
+	if param.Source == "swagger-path" {
+		return "1"
+	}
+	return baselineValue(param.InjectURL, param.Name)
 }

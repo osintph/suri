@@ -80,19 +80,20 @@ func (c *SSTICheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 			}
 
 			confirmed[key] = true
+			actualURL := findingInjectURL(param, injected)
 			findings = append(findings, &checks.Finding{
 				CheckID:    c.ID(),
 				Severity:   checks.SeverityHigh,
 				Confidence: checks.ConfidenceConfirmed,
-				Title:      fmt.Sprintf("Server-side template injection in parameter %q at %s", param.Name, param.InjectURL),
+				Title:      fmt.Sprintf("Server-side template injection in parameter %q at %s", param.Name, actualURL),
 				Description: fmt.Sprintf(
 					"The parameter %q at %s evaluates the arithmetic expression %q injected via "+
 						"payload %q. The expected signal %q was found in the response, confirming "+
 						"that the server-side template engine evaluates user input. SSTI can lead "+
 						"to remote code execution depending on the template engine and server context.",
-					param.Name, param.InjectURL, "7*7", p.Payload, expectedSignal,
+					param.Name, actualURL, "7*7", p.Payload, expectedSignal,
 				),
-				URL:       param.InjectURL,
+				URL:       actualURL,
 				Parameter: param.Name,
 				CWE:       "CWE-94",
 				OWASP:     "A03:2021",

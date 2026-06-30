@@ -277,11 +277,15 @@ func inventoryEndpoints(inv *crawler.Inventory, specURL, base string, paths map[
 				if p.In != "" {
 					source = "swagger-" + p.In
 				}
-				inv.Parameters = append(inv.Parameters, &crawler.Parameter{
+				param := &crawler.Parameter{
 					PageURL: fullURL,
 					Name:    p.Name,
 					Source:  source,
-				})
+				}
+				if source == "swagger-path" {
+					param.InjectURL = fullURL
+				}
+				inv.Parameters = append(inv.Parameters, param)
 			}
 		}
 	}

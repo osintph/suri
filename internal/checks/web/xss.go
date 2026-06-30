@@ -82,19 +82,20 @@ func (c *XSSCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Fi
 			}
 
 			confirmed[key] = true
+			actualURL := findingInjectURL(param, injected)
 			findings = append(findings, &checks.Finding{
 				CheckID:    c.ID(),
 				Severity:   checks.SeverityHigh,
 				Confidence: checks.ConfidenceConfirmed,
-				Title:      fmt.Sprintf("Reflected XSS in parameter %q at %s", param.Name, param.InjectURL),
+				Title:      fmt.Sprintf("Reflected XSS in parameter %q at %s", param.Name, actualURL),
 				Description: fmt.Sprintf(
 					"The parameter %q at %s reflects user input unencoded into the HTML response. "+
 						"The canary token %q was found verbatim in the response body after injecting "+
 						"the payload. This indicates the application outputs the parameter value "+
 						"without HTML entity-encoding, allowing arbitrary script execution.",
-					param.Name, param.InjectURL, canary,
+					param.Name, actualURL, canary,
 				),
-				URL:       param.InjectURL,
+				URL:       actualURL,
 				Parameter: param.Name,
 				CWE:       "CWE-79",
 				OWASP:     "A03:2021",

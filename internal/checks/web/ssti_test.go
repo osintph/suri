@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -90,5 +91,43 @@ func TestSSTICheckSafe(t *testing.T) {
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected 0 SSTI findings for safe server, got %d", len(findings))
+	}
+}
+
+func TestSSTIPathParameter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.TrimRight(r.URL.Path, "/"), "/")
+		raw := parts[len(parts)-1]
+		decoded, _ := url.PathUnescape(raw)
+		result := decoded
+		if strings.Contains(decoded, "{{7*7}}") {
+			result = strings.ReplaceAll(decoded, "{{7*7}}", "49")
+		} else if strings.Contains(decoded, "${7*7}") {
+			result = strings.ReplaceAll(decoded, "${7*7}", "49")
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "<html><body>%s</body></html>", result)
+	}))
+	defer srv.Close()
+
+	template := srv.URL + "/api/render/template/{t}"
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: template, Name: "t", Source: "swagger-path", InjectURL: template},
+	}
+
+	ck := &SSTICheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected SSTI finding for path-param template-evaluating server, got 0")
+	}
+	if findings[0].CheckID != "web.ssti" {
+		t.Errorf("unexpected check ID %q", findings[0].CheckID)
+	}
+	if findings[0].Parameter != "t" {
+		t.Errorf("expected parameter=t, got %q", findings[0].Parameter)
 	}
 }

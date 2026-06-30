@@ -119,19 +119,20 @@ func (c *RedirectCheck) Run(ctx context.Context, target *checks.Target) ([]*chec
 		}
 
 		confirmed[key] = true
+		actualURL := findingInjectURL(param, canaryURL)
 		findings = append(findings, &checks.Finding{
 			CheckID:    c.ID(),
 			Severity:   checks.SeverityMedium,
 			Confidence: checks.ConfidenceConfirmed,
-			Title:      fmt.Sprintf("Open redirect via parameter %q at %s", param.Name, param.InjectURL),
+			Title:      fmt.Sprintf("Open redirect via parameter %q at %s", param.Name, actualURL),
 			Description: fmt.Sprintf(
 				"The parameter %q at %s redirects to an attacker-controlled URL. "+
 					"When set to %q, the server responded with HTTP %d and "+
 					"Location: %s. An attacker can craft a link that appears to "+
 					"point to the legitimate site but redirects victims to a phishing page.",
-				param.Name, param.InjectURL, canaryURL, resp.StatusCode, location,
+				param.Name, actualURL, canaryURL, resp.StatusCode, location,
 			),
-			URL:       param.InjectURL,
+			URL:       actualURL,
 			Parameter: param.Name,
 			CWE:       "CWE-601",
 			OWASP:     "A01:2021",

@@ -20,6 +20,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -188,5 +189,40 @@ func TestCMDiTimingDetectsDelayOnConnectionError(t *testing.T) {
 	}
 	if len(findings) == 0 {
 		t.Error("expected CMDi finding even when connection closes after sleep delay")
+	}
+}
+
+func TestCMDiPathParameterTiming(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		parts := strings.Split(strings.TrimRight(r.URL.Path, "/"), "/")
+		raw := parts[len(parts)-1]
+		decoded, _ := url.PathUnescape(raw)
+		if strings.Contains(strings.ToLower(decoded), "sleep") {
+			time.Sleep(100 * time.Millisecond)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ping ok"))
+	}))
+	defer srv.Close()
+
+	template := srv.URL + "/api/ping/host/{host}"
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: template, Name: "host", Source: "swagger-path", InjectURL: template},
+	}
+
+	ck := &CMDiCheck{TimingThresholdMs: 50}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected CMDi finding for path-param timing-vulnerable server, got 0")
+	}
+	if findings[0].CheckID != "web.cmdi" {
+		t.Errorf("unexpected check ID %q", findings[0].CheckID)
+	}
+	if findings[0].Parameter != "host" {
+		t.Errorf("expected parameter=host, got %q", findings[0].Parameter)
 	}
 }
