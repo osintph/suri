@@ -7,6 +7,14 @@ Web application security scanner for authorized VAPT engagements.
 
 ---
 
+## Releases
+
+- **v0.1.2** WAF block page detection for Cloudflare, Akamai, Imperva, and AWS WAF. Suppresses false positives when scanning hardened targets.
+- **v0.1.1** Homebrew tap publishing via osintph/tap.
+- **v0.1.0** First public release. Web application security scanner for authorized VAPT engagements.
+
+---
+
 ## What Suri is
 
 Suri is a single static binary that crawls a web application, runs a suite of checks against the discovered surface, and writes findings to a SQLite database. It targets web applications, admin panels, REST APIs, and cloud storage. Every outbound request is validated against an engagement scope file before it is sent: if the host is not in scope, the request is blocked and logged. Findings are written in HTML and JSON formats suitable for client deliverables. A diff engine compares consecutive scans to show what changed between assessments.
@@ -51,8 +59,8 @@ Download the appropriate binary from the
 [releases page](https://github.com/osintph/suri/releases) and extract:
 
 ```bash
-wget https://github.com/osintph/suri/releases/download/v0.1.1/suri_0.1.1_linux_amd64.tar.gz
-tar xzf suri_0.1.1_linux_amd64.tar.gz
+wget https://github.com/osintph/suri/releases/download/v0.1.2/suri_0.1.2_linux_amd64.tar.gz
+tar xzf suri_0.1.2_linux_amd64.tar.gz
 sudo mv suri /usr/local/bin/
 suri --version
 ```
@@ -209,6 +217,9 @@ gcs_endpoint   = ""
 **Backup and source exposure**
 - `.git/HEAD`, `.env`, swap files, `.DS_Store`, source maps, common backup extensions
 - Content-verified; SPA catch-all responses are filtered by body hash deduplication
+
+**WAF detection**
+- WAF block page detection (Cloudflare, Akamai, Imperva, AWS WAF) that suppresses false positives when the scanner hits a hardened target
 
 ---
 
