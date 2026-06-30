@@ -210,7 +210,14 @@ func (c *BackupsCheck) Run(ctx context.Context, target *checks.Target) ([]*check
 			resp.Body.Close()
 
 		case status == http.StatusUnauthorized || status == http.StatusForbidden:
+			body := readBody(resp.Body, 16*1024)
 			resp.Body.Close()
+			if waf := DetectWAF(body); waf != WAFNone {
+				slog.Debug("backup probe blocked by WAF in 4xx response, skipping finding",
+					"url", entry.probeURL, "waf", waf.String(), "status", status)
+				target.WAFTracker.Record(urlHost(entry.probeURL), waf.String())
+				continue
+			}
 			findings = append(findings, c.makeFinding(
 				entry.probeURL, entry.originalURL, status, "protected", nil, 0, "",
 			))

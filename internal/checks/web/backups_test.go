@@ -578,3 +578,86 @@ func TestBackupCheckSkipsWhenOriginalIsWAFBlocked(t *testing.T) {
 			len(findings), findings[0].Description)
 	}
 }
+
+// TestBackupCheckSkipsWAFBlockOn403 verifies that when the backup probe returns
+// a 403 with a Cloudflare block page body, no finding is emitted. Before the
+// 9.1 fix, a 403 response always produced a "protected" finding without
+// inspecting the body for WAF signatures.
+func TestBackupCheckSkipsWAFBlockOn403(t *testing.T) {
+	const origBody = "<?php $db = 'mysql://localhost/app'; define('SECRET', 'hunter2'); ?>"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".bak") ||
+			strings.HasSuffix(r.URL.Path, ".old") ||
+			strings.HasSuffix(r.URL.Path, ".orig") ||
+			strings.HasSuffix(r.URL.Path, ".swp") {
+			// Cloudflare 1020: 403 with WAF block-page body.
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(cloudflareBlockPage))
+			return
+		}
+		if r.URL.Path == "/wp-config.php" {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(origBody))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.WAFTracker = checks.NewWAFTracker()
+	target.Inventory.URLs = []*crawler.DiscoveredURL{
+		{URL: srv.URL + "/wp-config.php", Source: "html", Depth: 1, ResponseStatus: 200, BodyHash: "x"},
+	}
+
+	ck := &BackupsCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings when backup probe returns 403 with WAF block page, got %d: %s",
+			len(findings), findings[0].Description)
+	}
+}
+
+// TestBackupCheck403WithoutWAFStillEmits is a regression guard. A legitimate
+// 403 response whose body contains no WAF signatures must still produce a
+// "protected" finding.
+func TestBackupCheck403WithoutWAFStillEmits(t *testing.T) {
+	const origBody = "<?php $db = 'mysql://localhost/app'; define('SECRET', 'hunter2'); ?>"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".bak") {
+			// Plain application 403 with no WAF body.
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte("<html><body>Access Denied by application</body></html>"))
+			return
+		}
+		if r.URL.Path == "/config.php" {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(origBody))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.WAFTracker = checks.NewWAFTracker()
+	target.Inventory.URLs = []*crawler.DiscoveredURL{
+		{URL: srv.URL + "/config.php", Source: "html", Depth: 1, ResponseStatus: 200, BodyHash: "x"},
+	}
+
+	ck := &BackupsCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Error("expected at least one 'protected' finding for legitimate 403 with no WAF body, got none")
+	}
+}
