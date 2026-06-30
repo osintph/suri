@@ -22,6 +22,8 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"sync"
 
 	"github.com/osintph/suri/internal/crawler"
 	internalhttp "github.com/osintph/suri/internal/http"
@@ -101,6 +103,76 @@ type Finding struct {
 	WordlistSource string // non-empty when the finding came from a wordlist probe
 }
 
+// WAFTracker accumulates per-host WAF block counts across all checks in a scan.
+// It is safe for concurrent use. A nil WAFTracker is valid and silently ignores
+// all operations (use NewWAFTracker to get a functional instance).
+type WAFTracker struct {
+	mu   sync.Mutex
+	data map[string]map[string]int // host -> wafName -> count
+}
+
+// NewWAFTracker returns an initialized WAFTracker ready to accumulate WAF blocks.
+func NewWAFTracker() *WAFTracker {
+	return &WAFTracker{data: make(map[string]map[string]int)}
+}
+
+// Record notes one WAF-blocked probe for host under wafName. Safe on nil receiver.
+func (t *WAFTracker) Record(host, wafName string) {
+	if t == nil {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.data[host] == nil {
+		t.data[host] = make(map[string]int)
+	}
+	t.data[host][wafName]++
+}
+
+var wafDisplayNames = map[string]string{
+	"cloudflare": "Cloudflare",
+	"akamai":     "Akamai",
+	"imperva":    "Imperva",
+	"aws-waf":    "AWS WAF",
+}
+
+// WAFFindings returns one info-level Finding per (host, WAF type) pair where
+// the accumulated block count meets or exceeds threshold. Call once after all
+// checks have completed. Safe on nil receiver (returns nil).
+func (t *WAFTracker) WAFFindings(threshold int) []*Finding {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var findings []*Finding
+	for host, byWAF := range t.data {
+		for wafName, count := range byWAF {
+			if count < threshold {
+				continue
+			}
+			display := wafDisplayNames[wafName]
+			if display == "" {
+				display = wafName
+			}
+			findings = append(findings, &Finding{
+				CheckID:    "scan.waf.detected",
+				Severity:   SeverityInfo,
+				Confidence: ConfidenceConfirmed,
+				Title:      fmt.Sprintf("Target behind %s WAF, scan coverage limited", display),
+				Description: fmt.Sprintf(
+					"Suri detected %d blocked responses with %s block-page signatures during the scan. "+
+						"Findings on this host should be reviewed manually. "+
+						"Consider allowlisting the scanning IP at the WAF level for a more thorough assessment.",
+					count, display,
+				),
+				URL: host,
+			})
+		}
+	}
+	return findings
+}
+
 // Target packages everything a Check needs to run against a single engagement.
 type Target struct {
 	Inventory   *crawler.Inventory
@@ -109,8 +181,9 @@ type Target struct {
 	Domain      string
 	Concurrency int
 	Notes       map[string]string
-	SeedURLs    []string // base URLs for admin/API path probing
-	Canary      string   // 8-char hex token shared across all injection checks in a scan
+	SeedURLs    []string    // base URLs for admin/API path probing
+	Canary      string      // 8-char hex token shared across all injection checks in a scan
+	WAFTracker  *WAFTracker // accumulates WAF block counts across checks; nil is safe
 }
 
 // Check is the interface every scan module implements.

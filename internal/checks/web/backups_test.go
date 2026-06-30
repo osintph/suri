@@ -25,8 +25,20 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/osintph/suri/internal/checks"
 	"github.com/osintph/suri/internal/crawler"
 )
+
+// cloudflareBlockPage is a minimal Cloudflare WAF block page for use in tests.
+const cloudflareBlockPage = `<!DOCTYPE html>
+<html lang="en-US">
+<head><title>Attention Required! | Cloudflare</title></head>
+<body>
+<div class="cf-error-details">
+<h1>Sorry, you have been blocked</h1>
+<p>Cloudflare Ray ID: a13467dd6c97d437</p>
+</div>
+</body></html>`
 
 func TestBackupsCheckFoundBak(t *testing.T) {
 	// Server returns the original body for /config.php and the same body for
@@ -492,5 +504,77 @@ func TestBackupCheckOriginalCached(t *testing.T) {
 
 	if got := int(atomic.LoadInt32(&origFetches)); got != 1 {
 		t.Errorf("expected exactly 1 GET to original URL, got %d", got)
+	}
+}
+
+// TestBackupCheckSkipsCloudflareBlockPage verifies that when the backup probe
+// returns a Cloudflare WAF block page, no finding is emitted regardless of
+// how similar the block page tokens look to the original.
+func TestBackupCheckSkipsCloudflareBlockPage(t *testing.T) {
+	const origBody = "<?php $db = 'mysql://localhost/app'; define('SECRET', 'hunter2'); ?>"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, ".bak") ||
+			strings.HasSuffix(r.URL.Path, ".old") ||
+			strings.HasSuffix(r.URL.Path, ".orig") ||
+			strings.HasSuffix(r.URL.Path, ".swp") {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(cloudflareBlockPage))
+			return
+		}
+		if r.URL.Path == "/config.php" {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(origBody))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.WAFTracker = checks.NewWAFTracker()
+	target.Inventory.URLs = []*crawler.DiscoveredURL{
+		{URL: srv.URL + "/config.php", Source: "html", Depth: 1, ResponseStatus: 200, BodyHash: "x"},
+	}
+
+	ck := &BackupsCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings when backup probes return WAF block page, got %d: %s",
+			len(findings), findings[0].Description)
+	}
+}
+
+// TestBackupCheckSkipsWhenOriginalIsWAFBlocked verifies that when the original
+// URL itself returns a Cloudflare block page, no backup finding is emitted.
+// Without the WAF fix, two identical block pages would produce Jaccard ≈ 1.0
+// and trigger a confirmed false-positive finding.
+func TestBackupCheckSkipsWhenOriginalIsWAFBlocked(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Every URL on this host returns the Cloudflare block page.
+		w.Header().Set("Content-Type", "text/html")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(cloudflareBlockPage))
+	}))
+	defer srv.Close()
+
+	target := webTarget(srv)
+	target.WAFTracker = checks.NewWAFTracker()
+	target.Inventory.URLs = []*crawler.DiscoveredURL{
+		{URL: srv.URL + "/config.php", Source: "html", Depth: 1, ResponseStatus: 200, BodyHash: "x"},
+	}
+
+	ck := &BackupsCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings when original URL returns WAF block page, got %d: %s",
+			len(findings), findings[0].Description)
 	}
 }

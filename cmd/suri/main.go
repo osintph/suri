@@ -472,6 +472,7 @@ func runScan(
 		Concurrency: threads,
 		SeedURLs:    []string{seedURL},
 		Canary:      canary,
+		WAFTracker:  checks.NewWAFTracker(),
 	}
 
 	allChecks := []checks.Check{
@@ -543,6 +544,25 @@ func runScan(
 					mediumPlusFindings++
 				}
 			}
+		}
+	}
+
+	// Emit one scan-level info finding per WAF type for hosts where >= 10 responses
+	// were intercepted by a WAF during the scan.
+	for _, f := range checkTarget.WAFTracker.WAFFindings(10) {
+		if _, fErr := st.InsertFinding(ctx, store.FindingRecord{
+			ScanID:          scanID,
+			FirstSeenScanID: scanID,
+			CheckID:         f.CheckID,
+			Severity:        string(f.Severity),
+			Title:           f.Title,
+			Description:     f.Description,
+			URL:             f.URL,
+			Confidence:      string(f.Confidence),
+		}); fErr != nil {
+			slog.Error("failed to persist WAF finding", "err", fErr)
+		} else {
+			infoFindings++
 		}
 	}
 

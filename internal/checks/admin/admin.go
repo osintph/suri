@@ -35,6 +35,7 @@ import (
 
 	"github.com/osintph/suri/internal/checks"
 	"github.com/osintph/suri/internal/crawler"
+	webcheck "github.com/osintph/suri/internal/checks/web"
 	"github.com/osintph/suri/internal/wordlists"
 )
 
@@ -250,6 +251,17 @@ func probeInterestingPath(ctx context.Context, target *checks.Target, rawURL str
 	bodyHash := adminHashBody(body)
 
 	if status == http.StatusNotFound {
+		return nil, status, bodyHash
+	}
+
+	// WAF pre-check: a WAF block page (200 challenge or 403 block) is not a
+	// real application response. Suppress the finding and record the block.
+	if waf := webcheck.DetectWAF(body); waf != webcheck.WAFNone {
+		slog.Debug("interesting path probe blocked by WAF, suppressing finding",
+			"url", rawURL, "waf", waf.String())
+		if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+			target.WAFTracker.Record(u.Host, waf.String())
+		}
 		return nil, status, bodyHash
 	}
 

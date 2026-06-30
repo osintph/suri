@@ -221,12 +221,21 @@ func (c *BackupsCheck) Run(ctx context.Context, target *checks.Target) ([]*check
 			resp.Body.Close()
 			backupHash := hashBody(backupBody)
 
+			// WAF pre-check: a block page is not a backup file. Skip content
+			// verification entirely when the probe response matches a known WAF.
+			if waf := DetectWAF(backupBody); waf != WAFNone {
+				slog.Debug("backup probe blocked by WAF, skipping content verification",
+					"url", entry.probeURL, "waf", waf.String())
+				target.WAFTracker.Record(urlHost(entry.probeURL), waf.String())
+				continue
+			}
+
 			if entry.originalURL == "" {
 				// Fixed backup path: no original to compare; skip 200 responses.
 				continue
 			}
 
-			orig := fetchOriginal(ctx, entry.originalURL, origCache, target.HTTP)
+			orig := fetchOriginal(ctx, entry.originalURL, origCache, target.HTTP, target.WAFTracker)
 			if orig == nil {
 				// Cannot verify without original; skip to avoid false positives.
 				continue
@@ -320,8 +329,9 @@ func (c *BackupsCheck) makeFinding(
 }
 
 // fetchOriginal returns the cached originalMeta for rawURL, fetching if needed.
-// Returns nil when the fetch fails or returns a non-200 status.
-func fetchOriginal(ctx context.Context, rawURL string, cache map[string]*originalMeta, client *internalhttp.Client) *originalMeta {
+// Returns nil when the fetch fails, returns a non-200 status, or the body
+// matches a known WAF block page (which cannot serve as a content reference).
+func fetchOriginal(ctx context.Context, rawURL string, cache map[string]*originalMeta, client *internalhttp.Client, tracker *checks.WAFTracker) *originalMeta {
 	if meta, ok := cache[rawURL]; ok {
 		return meta // may be nil (cached failure)
 	}
@@ -341,6 +351,15 @@ func fetchOriginal(ctx context.Context, rawURL string, cache map[string]*origina
 		return nil
 	}
 	body := readBody(resp.Body, 32*1024)
+	// If the original URL is itself served by a WAF, content verification
+	// against it is meaningless: every probe would look "similar" to the block page.
+	if waf := DetectWAF(body); waf != WAFNone {
+		slog.Debug("original URL returns WAF block page, skipping backup check for this origin",
+			"url", rawURL, "waf", waf.String())
+		tracker.Record(urlHost(rawURL), waf.String())
+		cache[rawURL] = nil
+		return nil
+	}
 	meta := &originalMeta{
 		body:        body,
 		contentType: resp.Header.Get("Content-Type"),

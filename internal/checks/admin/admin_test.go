@@ -486,3 +486,86 @@ func TestUniqueOrigins(t *testing.T) {
 		t.Errorf("second origin: want https://api.example.com, got %q", got[1])
 	}
 }
+
+// cloudflareBlockPageAdmin is a minimal Cloudflare WAF 403 block body for admin tests.
+// Cloudflare's 1020 rule returns 403 with the block-page HTML rather than the
+// 200-challenge style, making it the actual trigger for firm interesting-path findings.
+const cloudflareBlockPageAdmin = `<!DOCTYPE html>
+<html lang="en-US">
+<head><title>Attention Required! | Cloudflare</title></head>
+<body>
+<div class="cf-error-details">
+<h1>Sorry, you have been blocked</h1>
+<p>Cloudflare Ray ID: a13467dd6c97d437</p>
+</div>
+</body></html>`
+
+// TestInterestingPathSkipsWAFBlockPage verifies that a Cloudflare WAF block page
+// (403 response) on an interesting path is NOT emitted as a finding.
+// Without the WAF fix, a 403 with a WAF body triggers a firm finding because
+// probeInterestingPath does not inspect the response body for 401/403 responses.
+func TestInterestingPathSkipsWAFBlockPage(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/wp-config.php" {
+			// Cloudflare 1020 block: 403 status with WAF block-page body.
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(cloudflareBlockPageAdmin))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	target.WAFTracker = checks.NewWAFTracker()
+	ck := &AdminCheck{WordlistPath: miniWordlist(t)}
+
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, f := range findings {
+		if f.CheckID == interestingCheckID && strings.Contains(f.URL, "wp-config.php") {
+			t.Errorf("unexpected interesting-path finding for WAF block page: URL=%s title=%q", f.URL, f.Title)
+		}
+	}
+}
+
+// TestInterestingPathFiresOnRealMatch is a regression guard confirming that WAF
+// detection does not accidentally suppress legitimate content-verified findings.
+func TestInterestingPathFiresOnRealMatch(t *testing.T) {
+	wpConfigBody := "<?php\ndefine('DB_NAME', 'wordpress');\ndefine('DB_PASSWORD', 'hunter2');\ndefine('AUTH_KEY', 'abc123');\n?>"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/wp-config.php" {
+			w.Header().Set("Content-Type", "text/plain")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(wpConfigBody))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	target.WAFTracker = checks.NewWAFTracker()
+	ck := &AdminCheck{WordlistPath: miniWordlist(t)}
+
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	f := findFinding(findings, "/wp-config.php")
+	if f == nil {
+		t.Fatal("expected a finding for /wp-config.php with real content, got none")
+	}
+	if f.CheckID != interestingCheckID {
+		t.Errorf("CheckID: want %q, got %q", interestingCheckID, f.CheckID)
+	}
+	if f.Confidence != checks.ConfidenceConfirmed {
+		t.Errorf("Confidence: want confirmed, got %q", f.Confidence)
+	}
+}
