@@ -102,7 +102,19 @@ For a target you have authorization to scan:
 suri scan https://target.example.com
 ```
 
-Suri derives an implicit scope from the target URL and emits a startup warning as a reminder to verify authorization. No scope file required.
+Suri crawls the target, runs the check suite, and writes an HTML report next to the scan database. Open the .html file in any browser to review findings.
+
+To skip the auto-report (for CI or batch scans):
+
+```bash
+suri scan --no-report https://target.example.com
+```
+
+To also generate JSON alongside HTML:
+
+```bash
+suri scan --report-format both https://target.example.com
+```
 
 ### Formal engagement scans
 
@@ -131,20 +143,15 @@ Scan complete
   JS artifacts:         8
   Findings:             2 (info: 14 suppressed)
   DB: /tmp/suri-out/a3f2c1d0-....db
+  Report: /tmp/suri-out/a3f2c1d0-....html
 ```
 
-**Generate a report.**
+**Regenerate a report.**
 
-Copy the scan ID from the `DB:` line (the UUID portion of the filename).
-
-```bash
-./suri report --scan a3f2c1d0-... --format html --out report.html
-```
-
-Open `report.html` in a browser. For a machine-readable output:
+Every scan auto-generates an HTML report. To regenerate, convert format, or report on a historical scan:
 
 ```bash
-./suri report --scan a3f2c1d0-... --format json --out report.json
+suri report --scan <scan-id> --db <db-path> --format html --out <file>
 ```
 
 ---

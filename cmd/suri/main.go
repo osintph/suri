@@ -346,6 +346,8 @@ func newScanCmd() *cobra.Command {
 		scanTimeout     time.Duration
 		maxBackupProbes int
 		debug           bool
+		noReport        bool
+		reportFormat    string
 	)
 
 	cmd := &cobra.Command{
@@ -378,7 +380,8 @@ remind you to verify authorization before scanning.`,
 			}
 			code := runScan(cmd.Context(), scopeFile, args[0], dbPath, domain,
 				s3Endpoint, azureEndpoint, gcsEndpoint, adminWordlist,
-				maxBackupProbes, threads, includeInfo, cfg, scanTimeout)
+				maxBackupProbes, threads, includeInfo, cfg, scanTimeout,
+				noReport, reportFormat)
 			if code != 0 {
 				os.Exit(code)
 			}
@@ -401,8 +404,32 @@ remind you to verify authorization before scanning.`,
 	cmd.Flags().DurationVar(&scanTimeout, "scan-timeout", 45*time.Minute, "hard time limit for the entire scan; scan stops cleanly when exceeded (exit status 124)")
 	cmd.Flags().IntVar(&maxBackupProbes, "max-backup-probes", 0, "maximum HTTP probes made by the backup file check (0 = default 200)")
 	cmd.Flags().BoolVar(&debug, "debug", false, "enable debug-level logging (default: info)")
+	cmd.Flags().BoolVar(&noReport, "no-report", false, "skip auto report generation after scan completes")
+	cmd.Flags().StringVar(&reportFormat, "report-format", "html", "auto-report format: html, json, or both")
 
 	return cmd
+}
+
+// autoReportFunc generates a single-format report at outPath for the given scan.
+type autoReportFunc func(ctx context.Context, st *store.Store, scanID, outPath, format, ver string) error
+
+// autoReportFn is the report writer used by runScan. Tests may replace it.
+var autoReportFn autoReportFunc = writeAutoReport
+
+func writeAutoReport(ctx context.Context, st *store.Store, scanID, outPath, format, ver string) error {
+	f, err := os.Create(outPath)
+	if err != nil {
+		return fmt.Errorf("creating %s: %w", outPath, err)
+	}
+	defer f.Close()
+	switch format {
+	case "html":
+		return report.RenderHTML(ctx, st, scanID, ver, f)
+	case "json":
+		return report.RenderJSON(ctx, st, scanID, f)
+	default:
+		return fmt.Errorf("unsupported report format %q", format)
+	}
 }
 
 // runScan executes a full scan and returns an OS exit code:
@@ -424,6 +451,8 @@ func runScan(
 	includeInfo bool,
 	crawlCfg crawler.Config,
 	scanTimeout time.Duration,
+	noReport bool,
+	reportFormat string,
 ) int {
 	conf := config.Default()
 
@@ -689,6 +718,22 @@ func runScan(
 		fmt.Printf("  Findings:             %d\n", mediumPlusFindings)
 	}
 	fmt.Printf("  DB: %s\n", resolvedDBPath)
+
+	if !noReport {
+		fmts := []string{reportFormat}
+		if reportFormat == "both" {
+			fmts = []string{"html", "json"}
+		}
+		outDir := filepath.Dir(resolvedDBPath)
+		for _, fmtName := range fmts {
+			outPath := filepath.Join(outDir, scanID+"."+fmtName)
+			if genErr := autoReportFn(ctx, st, scanID, outPath, fmtName, version); genErr != nil {
+				slog.Warn("auto-report generation failed", "format", fmtName, "err", genErr)
+			} else {
+				fmt.Printf("  Report: %s\n", outPath)
+			}
+		}
+	}
 
 	return exitStatus
 }

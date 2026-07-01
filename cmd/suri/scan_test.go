@@ -18,29 +18,40 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/osintph/suri/internal/crawler"
+	"github.com/osintph/suri/internal/store"
 )
 
-func TestRunScanImplicitScope(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func minimalSrv() *httptest.Server {
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
 		fmt.Fprintln(w, "<html><body><h1>hello</h1></body></html>")
 	}))
-	defer srv.Close()
+}
 
-	tmpDir := t.TempDir()
+func minimalCrawlCfg() crawler.Config {
 	cfg := crawler.DefaultConfig()
 	cfg.MaxDepth = 1
 	cfg.MaxURLs = 10
 	cfg.Concurrency = 2
+	return cfg
+}
+
+func TestRunScanImplicitScope(t *testing.T) {
+	srv := minimalSrv()
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
 
 	code := runScan(
 		context.Background(),
@@ -55,11 +66,169 @@ func TestRunScanImplicitScope(t *testing.T) {
 		0,     // maxBackupProbes
 		2,     // threads
 		false, // includeInfo
-		cfg,
+		minimalCrawlCfg(),
 		30*time.Second,
+		true,   // noReport: keep test fast, report tested separately
+		"html", // reportFormat
 	)
 
 	if code != 0 {
 		t.Errorf("expected exit code 0 for implicit-scope scan, got %d", code)
+	}
+}
+
+func TestScanAutoGeneratesHTMLReport(t *testing.T) {
+	srv := minimalSrv()
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+
+	code := runScan(
+		context.Background(),
+		"", srv.URL,
+		filepath.Join(tmpDir, "test.db"),
+		"", "", "", "", "",
+		0, 2, false,
+		minimalCrawlCfg(),
+		30*time.Second,
+		false, "html",
+	)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(tmpDir, "*.html"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 .html report, found %d: %v", len(matches), matches)
+	}
+
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("reading report: %v", err)
+	}
+	if len(data) == 0 {
+		t.Error("report file is empty")
+	}
+	// The scan ID is the base name of the report file without extension.
+	// RenderHTML embeds it in the template output.
+	scanID := strings.TrimSuffix(filepath.Base(matches[0]), ".html")
+	if !strings.Contains(string(data), scanID) {
+		t.Errorf("HTML report does not contain scan ID %q", scanID)
+	}
+}
+
+func TestScanNoReportFlag(t *testing.T) {
+	srv := minimalSrv()
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+
+	code := runScan(
+		context.Background(),
+		"", srv.URL,
+		filepath.Join(tmpDir, "test.db"),
+		"", "", "", "", "",
+		0, 2, false,
+		minimalCrawlCfg(),
+		30*time.Second,
+		true, "html", // noReport=true
+	)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(tmpDir, "*.html"))
+	if len(matches) != 0 {
+		t.Errorf("expected no .html files with --no-report, found %d: %v", len(matches), matches)
+	}
+}
+
+func TestScanReportFormatJSON(t *testing.T) {
+	srv := minimalSrv()
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+
+	code := runScan(
+		context.Background(),
+		"", srv.URL,
+		filepath.Join(tmpDir, "test.db"),
+		"", "", "", "", "",
+		0, 2, false,
+		minimalCrawlCfg(),
+		30*time.Second,
+		false, "json",
+	)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	htmlMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*.html"))
+	if len(htmlMatches) != 0 {
+		t.Errorf("expected no .html files with --report-format json, found %d", len(htmlMatches))
+	}
+	jsonMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*.json"))
+	if len(jsonMatches) != 1 {
+		t.Errorf("expected 1 .json file, found %d: %v", len(jsonMatches), jsonMatches)
+	}
+}
+
+func TestScanReportFormatBoth(t *testing.T) {
+	srv := minimalSrv()
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+
+	code := runScan(
+		context.Background(),
+		"", srv.URL,
+		filepath.Join(tmpDir, "test.db"),
+		"", "", "", "", "",
+		0, 2, false,
+		minimalCrawlCfg(),
+		30*time.Second,
+		false, "both",
+	)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	htmlMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*.html"))
+	if len(htmlMatches) != 1 {
+		t.Errorf("expected 1 .html file with --report-format both, found %d", len(htmlMatches))
+	}
+	jsonMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*.json"))
+	if len(jsonMatches) != 1 {
+		t.Errorf("expected 1 .json file with --report-format both, found %d", len(jsonMatches))
+	}
+}
+
+func TestScanContinuesIfReportFails(t *testing.T) {
+	srv := minimalSrv()
+	defer srv.Close()
+
+	orig := autoReportFn
+	autoReportFn = func(_ context.Context, _ *store.Store, _, _, _, _ string) error {
+		return errors.New("simulated disk full")
+	}
+	defer func() { autoReportFn = orig }()
+
+	tmpDir := t.TempDir()
+
+	code := runScan(
+		context.Background(),
+		"", srv.URL,
+		filepath.Join(tmpDir, "test.db"),
+		"", "", "", "", "",
+		0, 2, false,
+		minimalCrawlCfg(),
+		30*time.Second,
+		false, "html",
+	)
+	if code != 0 {
+		t.Errorf("scan should succeed even when report generation fails, got exit code %d", code)
 	}
 }

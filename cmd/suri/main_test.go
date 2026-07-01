@@ -63,6 +63,8 @@ ips             = ["127.0.0.1"]
 		false, // includeInfo
 		crawler.Config{MaxDepth: 1, MaxURLs: 10, Concurrency: 1, RatePerHost: 100},
 		100*time.Millisecond, // scan timeout
+		true,                 // noReport: skip for timeout test
+		"html",               // reportFormat
 	)
 	elapsed := time.Since(start)
 
