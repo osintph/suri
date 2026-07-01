@@ -45,8 +45,45 @@ import (
 // The default "dev" is used for local builds outside the release pipeline.
 var version = "dev"
 
+const bannerText = ` ███████╗██╗   ██╗██████╗ ██╗
+ ██╔════╝██║   ██║██╔══██╗██║
+ ███████╗██║   ██║██████╔╝██║
+ ╚════██║██║   ██║██╔══██╗██║
+ ███████║╚██████╔╝██║  ██║██║
+ ╚══════╝ ╚═════╝ ╚═╝  ╚═╝╚═╝  v%s
+                     web app security scanner
+                     for authorized VAPT engagements
+`
+
+// bannerStr is set in main() once; package-level so newVersionCmd can access it.
+var bannerStr string
+
+// quietFlag suppresses the banner; set via --quiet / -q.
+var quietFlag bool
+
+func isTTY(f *os.File) bool {
+	stat, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return (stat.Mode() & os.ModeCharDevice) != 0
+}
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, nil)))
+
+	// Pre-check --quiet before cobra parses flags so banner suppression
+	// applies to SetVersionTemplate too.
+	earlyQuiet := false
+	for _, a := range os.Args[1:] {
+		if a == "--quiet" || a == "-q" {
+			earlyQuiet = true
+			break
+		}
+	}
+	if !earlyQuiet && os.Getenv("NO_COLOR") == "" && isTTY(os.Stdout) {
+		bannerStr = fmt.Sprintf(bannerText, version)
+	}
 
 	root := &cobra.Command{
 		Use:               "suri",
@@ -54,7 +91,16 @@ func main() {
 		CompletionOptions: cobra.CompletionOptions{DisableDefaultCmd: true},
 		Version:           version,
 	}
-	root.SetVersionTemplate("suri {{.Version}}\n")
+	root.SetVersionTemplate(bannerStr + "suri {{.Version}}\n")
+	root.PersistentFlags().BoolVarP(&quietFlag, "quiet", "q", false, "suppress banner and non-essential output")
+
+	defaultHelp := root.HelpFunc()
+	root.SetHelpFunc(func(cmd *cobra.Command, args []string) {
+		if cmd.Parent() == nil {
+			fmt.Print(bannerStr)
+		}
+		defaultHelp(cmd, args)
+	})
 
 	root.AddCommand(
 		newScanCmd(),
@@ -74,6 +120,7 @@ func newVersionCmd() *cobra.Command {
 		Use:   "version",
 		Short: "Print the Suri version and exit",
 		Run: func(cmd *cobra.Command, args []string) {
+			fmt.Print(bannerStr)
 			fmt.Printf("suri %s\n", version)
 		},
 	}
@@ -340,7 +387,7 @@ func newScanCmd() *cobra.Command {
 	cmd.Flags().IntVar(&threads, "threads", 10, "number of concurrent HTTP workers")
 	cmd.Flags().Float64Var(&rate, "rate", 10, "maximum requests per second per host")
 	cmd.Flags().BoolVar(&includeInfo, "include-info", false, "include info-severity findings in the scan summary (info findings are always written to the database)")
-	cmd.Flags().DurationVar(&scanTimeout, "scan-timeout", 15*time.Minute, "hard time limit for the entire scan; scan stops cleanly when exceeded (exit status 124)")
+	cmd.Flags().DurationVar(&scanTimeout, "scan-timeout", 45*time.Minute, "hard time limit for the entire scan; scan stops cleanly when exceeded (exit status 124)")
 	cmd.Flags().IntVar(&maxBackupProbes, "max-backup-probes", 0, "maximum HTTP probes made by the backup file check (0 = default 200)")
 	cmd.Flags().BoolVar(&debug, "debug", false, "enable debug-level logging (default: info)")
 
@@ -493,6 +540,10 @@ func runScan(
 		&web.CMDiCheck{},
 		&web.RedirectCheck{},
 		&web.BackupsCheck{MaxProbes: maxBackupProbes},
+		&web.CookieCheck{},
+		&web.CSRFCheck{},
+		&web.ErrorCheck{},
+		&web.SRICheck{},
 	}
 
 	var mediumPlusFindings, infoFindings int
