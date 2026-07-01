@@ -9,6 +9,7 @@ Web application security scanner for authorized VAPT engagements.
 
 ## Releases
 
+- **v0.1.3** OpenAPI path parameter and JSON body injection. Modern REST APIs documented with OpenAPI specs are now testable across XSS, SQLi (error and time), SSTI, command injection, and open redirect.
 - **v0.1.2** WAF block page detection for Cloudflare, Akamai, Imperva, and AWS WAF. Suppresses false positives when scanning hardened targets.
 - **v0.1.1** Homebrew tap publishing via osintph/tap.
 - **v0.1.0** First public release. Web application security scanner for authorized VAPT engagements.
@@ -59,8 +60,8 @@ Download the appropriate binary from the
 [releases page](https://github.com/osintph/suri/releases) and extract:
 
 ```bash
-wget https://github.com/osintph/suri/releases/download/v0.1.2/suri_0.1.2_linux_amd64.tar.gz
-tar xzf suri_0.1.2_linux_amd64.tar.gz
+wget https://github.com/osintph/suri/releases/download/v0.1.3/suri_0.1.3_linux_amd64.tar.gz
+tar xzf suri_0.1.3_linux_amd64.tar.gz
 sudo mv suri /usr/local/bin/
 suri --version
 ```
@@ -210,6 +211,7 @@ gcs_endpoint   = ""
 - Server-side template injection: canary expression evaluation for Jinja2, Twig, Freemarker, ERB
 - Command injection: time-based sleep payloads only
 - Open redirect: canary URL injection
+- Injection testing against OpenAPI-documented REST APIs (path parameters and JSON request bodies), in addition to query strings and form parameters
 
 **Security headers**
 - CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy
