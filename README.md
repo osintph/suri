@@ -38,28 +38,15 @@ Install via Homebrew:
 brew tap osintph/tap
 brew trust osintph/tap
 brew install suri
-```
-
-On first run, macOS Gatekeeper will block the unsigned binary.
-Clear the quarantine flag once:
-
-```bash
-sudo xattr -d com.apple.quarantine $(which suri)
-```
-
-Verify:
-
-```bash
+sudo xattr -d com.apple.quarantine "$(which suri)"
 suri --version
 ```
 
-These extra steps will go away in a future release once the binary
-is signed and notarized with an Apple Developer ID.
+On first run, macOS Gatekeeper will block the unsigned binary. The `xattr` line clears the quarantine flag. These extra steps will go away in a future release once the binary is signed and notarized with an Apple Developer ID.
 
 ### Linux
 
-Download the appropriate binary from the
-[releases page](https://github.com/osintph/suri/releases) and extract:
+Download the binary from the [releases page](https://github.com/osintph/suri/releases) and install:
 
 ```bash
 wget https://github.com/osintph/suri/releases/download/v0.1.5/suri_0.1.5_linux_amd64.tar.gz
@@ -68,34 +55,40 @@ sudo mv suri /usr/local/bin/
 suri --version
 ```
 
-Or install from source with Go 1.23+:
+### Windows
+
+PowerShell (any recent Windows 10 or 11):
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/osintph/suri/releases/download/v0.1.5/suri_0.1.5_windows_amd64.zip" -OutFile "suri.zip" -UseBasicParsing
+Expand-Archive -Path suri.zip -DestinationPath . -Force
+.\suri.exe --version
+```
+
+Add the folder containing `suri.exe` to your PATH so you can run `suri` from any directory.
+
+### Build from source
+
+Requires Go 1.23 or newer:
 
 ```bash
 go install github.com/osintph/suri/cmd/suri@latest
 ```
 
-### Windows
-
-Download the Windows zip from the [releases page](https://github.com/osintph/suri/releases), extract it, and add the folder containing `suri.exe` to your PATH.
-
-PowerShell one-liner install (adjust the destination path as needed):
-
-```powershell
-Invoke-WebRequest -Uri "https://github.com/osintph/suri/releases/download/v0.1.4/suri_0.1.4_windows_amd64.zip" -OutFile "suri.zip"
-Expand-Archive -Path suri.zip -DestinationPath .
-.\suri.exe --version
-```
-
-### Build from source
+Or clone and build:
 
 ```bash
-git clone git@github.com:osintph/suri.git
+git clone https://github.com/osintph/suri.git
 cd suri
 go build -o suri ./cmd/suri
 ./suri --version
 ```
 
-Requires Go 1.25 or later. No CGO dependencies.
+### Troubleshooting
+
+**"error: cannot derive implicit scope: invalid or unsupported target URL"**
+
+The URL argument must be a bare URL like `https://example.com`, not markdown link syntax `[example](https://example.com)`. If you copied the command from a rendered Markdown page, retype the URL by hand.
 
 ---
 
