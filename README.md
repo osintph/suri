@@ -9,6 +9,7 @@ Web application security scanner for authorized VAPT engagements.
 
 ## Releases
 
+- **v0.1.6** Auto-generated HTML report after scan completion. `--no-report` skips generation; `--report-format` supports html (default), json, or both. The report subcommand remains for regenerating historical scan reports.
 - **v0.1.5** Quick scan mode. `--scope` is now optional; when omitted, Suri derives an implicit scope from the target URL (hostname and port from scheme). Simpler UX for one-off scans.
 - **v0.1.4** Sensible defaults and quick-win checks. New: cookie flag audit, anti-CSRF token detection on POST forms, application error disclosure for 5xx stack traces, missing SRI on cross-origin scripts. Default scan timeout raised from 15m to 45m. ASCII banner on --version and --help.
 - **v0.1.3** OpenAPI path parameter and JSON body injection. Modern REST APIs documented with OpenAPI specs are now testable across XSS, SQLi (error and time), SSTI, command injection, and open redirect.
@@ -49,8 +50,8 @@ On first run, macOS Gatekeeper will block the unsigned binary. The `xattr` line 
 Download the binary from the [releases page](https://github.com/osintph/suri/releases) and install:
 
 ```bash
-wget https://github.com/osintph/suri/releases/download/v0.1.5/suri_0.1.5_linux_amd64.tar.gz
-tar xzf suri_0.1.5_linux_amd64.tar.gz
+wget https://github.com/osintph/suri/releases/download/v0.1.6/suri_0.1.6_linux_amd64.tar.gz
+tar xzf suri_0.1.6_linux_amd64.tar.gz
 sudo mv suri /usr/local/bin/
 suri --version
 ```
