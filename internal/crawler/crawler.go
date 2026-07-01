@@ -117,11 +117,14 @@ func (c *Crawler) Crawl(ctx context.Context, seedURLs []string) (*Inventory, err
 
 	// updateMeta is called by process after a successful fetch to record the
 	// HTTP status and body hash on the DiscoveredURL created by dispatch.
-	updateMeta := func(rawURL string, status int, bodyHash string) {
+	updateMeta := func(rawURL string, status int, bodyHash string, cookies []*http.Cookie, ct string, body []byte) {
 		mu.Lock()
 		if du, ok := urlReg[rawURL]; ok {
 			du.ResponseStatus = status
 			du.BodyHash = bodyHash
+			du.Cookies = cookies
+			du.ContentType = ct
+			du.ResponseBody = body
 		}
 		mu.Unlock()
 	}
@@ -174,7 +177,7 @@ func (c *Crawler) Crawl(ctx context.Context, seedURLs []string) (*Inventory, err
 }
 
 // process fetches a single URL, updates the inventory, and dispatches new URLs.
-func (c *Crawler) process(ctx context.Context, rawURL string, depth int, inv *Inventory, mu *sync.Mutex, dispatch func(string, string, int), updateMeta func(string, int, string), addToInv func(string, string, int)) {
+func (c *Crawler) process(ctx context.Context, rawURL string, depth int, inv *Inventory, mu *sync.Mutex, dispatch func(string, string, int), updateMeta func(string, int, string, []*http.Cookie, string, []byte), addToInv func(string, string, int)) {
 	if ctx.Err() != nil {
 		return
 	}
@@ -207,6 +210,27 @@ func (c *Crawler) process(ctx context.Context, rawURL string, depth int, inv *In
 		return
 	}
 
+	// Extract response metadata before determining the effective URL so it can
+	// be persisted on the DiscoveredURL for later checks to read without
+	// re-fetching.
+	cookies := resp.Cookies()
+	ct := resp.Header.Get("Content-Type")
+	status := resp.StatusCode
+	bodyHash := computeBodyHash(body)
+
+	// Cache body only for HTML responses and 5xx error responses. Other response
+	// bodies (JS, CSS, images, etc.) are not needed by any check and would waste
+	// memory.
+	var cachedBody []byte
+	if isHTML(ct) || status >= 500 {
+		const bodyCap = 512 * 1024
+		if len(body) > bodyCap {
+			cachedBody = body[:bodyCap]
+		} else {
+			cachedBody = body
+		}
+	}
+
 	// Determine the effective URL and base after any redirects.
 	// Go's HTTP client follows redirects transparently; resp.Request.URL is the
 	// final URL the response came from.
@@ -216,16 +240,15 @@ func (c *Crawler) process(ctx context.Context, rawURL string, depth int, inv *In
 		// Add the redirect target to the inventory without re-queuing it. We
 		// already have its response body so there is no need to fetch it again.
 		addToInv(finalURLStr, "redirect-target", depth)
-		updateMeta(finalURLStr, resp.StatusCode, computeBodyHash(body))
+		updateMeta(finalURLStr, status, bodyHash, cookies, ct, cachedBody)
 		effectiveURL = finalURLStr
 		effectiveBase = resp.Request.URL
 		// rawURL (the redirect source) keeps ResponseStatus == 0 because we
 		// never received a direct response for it.
 	} else {
-		updateMeta(rawURL, resp.StatusCode, computeBodyHash(body))
+		updateMeta(rawURL, status, bodyHash, cookies, ct, cachedBody)
 	}
 
-	ct := resp.Header.Get("Content-Type")
 	path := effectiveBase.Path
 
 	switch {

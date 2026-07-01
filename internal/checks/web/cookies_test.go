@@ -18,26 +18,35 @@ package web
 
 import (
 	"context"
-	"fmt"
 	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	"github.com/osintph/suri/internal/checks"
+	"github.com/osintph/suri/internal/crawler"
 )
 
-func TestCookieCheckDetectsMissingFlags(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.SetCookie(w, &http.Cookie{
-			Name:  "session",
-			Value: "abc123",
-		})
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "hello")
-	}))
-	defer srv.Close()
+// inventoryTarget returns a Target with no HTTP client (nil) to assert that
+// checks reading from inventory make zero HTTP calls.
+func inventoryTarget(urls []*crawler.DiscoveredURL) *checks.Target {
+	return &checks.Target{
+		Inventory: &crawler.Inventory{URLs: urls},
+		HTTP:      nil, // panics on any Do call -- proves no HTTP requests are made
+	}
+}
 
-	target := webTarget(srv)
+func TestCookieCheckDetectsMissingFlags(t *testing.T) {
+	// Cookie with no Secure, no HttpOnly, no SameSite -- expects 3 findings.
+	urls := []*crawler.DiscoveredURL{
+		{
+			URL:            "http://example.com/",
+			ResponseStatus: 200,
+			Cookies: []*http.Cookie{
+				{Name: "session", Value: "abc123"},
+			},
+		},
+	}
 	ck := &CookieCheck{}
-	findings, err := ck.Run(context.Background(), target)
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -55,19 +64,57 @@ func TestCookieCheckDetectsMissingFlags(t *testing.T) {
 }
 
 func TestCookieCheckNoCookies(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, "hello")
-	}))
-	defer srv.Close()
-
-	target := webTarget(srv)
+	urls := []*crawler.DiscoveredURL{
+		{URL: "http://example.com/", ResponseStatus: 200, Cookies: nil},
+	}
 	ck := &CookieCheck{}
-	findings, err := ck.Run(context.Background(), target)
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings, got %d", len(findings))
+	}
+}
+
+func TestCookiesCheckReadsInventoryNotHTTP(t *testing.T) {
+	// HTTP is nil: any target.HTTP.Do call would panic. Assert no panic.
+	urls := []*crawler.DiscoveredURL{
+		{
+			URL:            "http://example.com/",
+			ResponseStatus: 200,
+			Cookies: []*http.Cookie{
+				{Name: "sess", Value: "x"},
+			},
+		},
+	}
+	ck := &CookieCheck{}
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Error("expected findings from inventory cookies")
+	}
+}
+
+func TestCookieCheckSecureAndHttpOnlySet(t *testing.T) {
+	// Cookie that is Secure and HttpOnly but missing SameSite -- expects 1 finding.
+	urls := []*crawler.DiscoveredURL{
+		{
+			URL:            "https://example.com/",
+			ResponseStatus: 200,
+			Cookies: []*http.Cookie{
+				{Name: "session", Value: "abc123", Secure: true, HttpOnly: true},
+			},
+		},
+	}
+	ck := &CookieCheck{}
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Errorf("expected 1 finding (missing SameSite), got %d", len(findings))
 	}
 }

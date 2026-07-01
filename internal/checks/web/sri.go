@@ -29,10 +29,8 @@ import (
 	"github.com/osintph/suri/internal/checks"
 )
 
-// SRICheck fetches HTML pages from seed and discovered URLs and flags
-// cross-origin <script> tags that lack an integrity attribute. Missing
-// Subresource Integrity on CDN-hosted scripts allows supply-chain attacks
-// if the CDN is compromised.
+// SRICheck scans HTML page bodies cached by the crawler and flags cross-origin
+// <script> tags that lack an integrity attribute. No fresh HTTP requests are made.
 type SRICheck struct{}
 
 func (c *SRICheck) ID() string                { return "web.sri.missing" }
@@ -41,59 +39,28 @@ func (c *SRICheck) Severity() checks.Severity { return checks.SeverityLow }
 func (c *SRICheck) Category() checks.Category { return checks.CategoryWeb }
 
 func (c *SRICheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
-	seen := make(map[string]bool)
-	var candidates []string
-	for _, u := range target.SeedURLs {
-		if !seen[u] {
-			seen[u] = true
-			candidates = append(candidates, u)
-		}
-	}
-	if target.Inventory != nil {
-		const maxInventory = 50
-		added := 0
-		for _, du := range target.Inventory.URLs {
-			if added >= maxInventory {
-				break
-			}
-			if du.ResponseStatus == http.StatusOK && !seen[du.URL] {
-				seen[du.URL] = true
-				candidates = append(candidates, du.URL)
-				added++
-			}
-		}
+	if target.Inventory == nil {
+		return nil, nil
 	}
 
 	emitted := make(map[string]bool)
 	var findings []*checks.Finding
 
-	for _, pageURL := range candidates {
+	for _, du := range target.Inventory.URLs {
 		select {
 		case <-ctx.Done():
 			return findings, ctx.Err()
 		default:
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, pageURL, nil)
-		if err != nil {
+		if du.ResponseStatus != http.StatusOK || len(du.ResponseBody) == 0 {
 			continue
 		}
-		resp, err := target.HTTP.Do(ctx, req)
-		if err != nil {
-			continue
-		}
-		body := readBody(resp.Body, 1*1024*1024)
-		resp.Body.Close()
-
-		if resp.StatusCode != http.StatusOK {
-			continue
-		}
-		ct := resp.Header.Get("Content-Type")
-		if !strings.Contains(ct, "html") {
+		if !strings.Contains(du.ContentType, "html") {
 			continue
 		}
 
-		pageOrigin := urlOrigin(pageURL)
-		doc, err := html.Parse(bytes.NewReader(body))
+		pageOrigin := urlOrigin(du.URL)
+		doc, err := html.Parse(bytes.NewReader(du.ResponseBody))
 		if err != nil {
 			continue
 		}
@@ -104,24 +71,24 @@ func (c *SRICheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Fi
 				src := htmlAttr(n, "src")
 				integrity := htmlAttr(n, "integrity")
 				if src != "" && integrity == "" {
-					abs := toAbsoluteForSRI(pageURL, src)
+					abs := toAbsoluteForSRI(du.URL, src)
 					if abs != "" && urlOrigin(abs) != pageOrigin {
-						key := pageURL + "|" + abs
+						key := du.URL + "|" + abs
 						if !emitted[key] {
 							emitted[key] = true
 							findings = append(findings, &checks.Finding{
 								CheckID:    c.ID(),
 								Severity:   checks.SeverityLow,
 								Confidence: checks.ConfidenceConfirmed,
-								Title:      fmt.Sprintf("Cross-origin script without integrity at %s", pageURL),
+								Title:      fmt.Sprintf("Cross-origin script without integrity at %s", du.URL),
 								Description: fmt.Sprintf(
 									"The page at %s loads a cross-origin script from %s without an "+
 										"integrity attribute. Without Subresource Integrity, the browser "+
 										"cannot verify the script has not been tampered with if the "+
 										"third-party host is compromised.",
-									pageURL, abs,
+									du.URL, abs,
 								),
-								URL:   pageURL,
+								URL:   du.URL,
 								CWE:   "CWE-353",
 								OWASP: "A08:2021",
 								Evidence: &checks.Evidence{

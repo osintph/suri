@@ -19,7 +19,6 @@ package web
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"regexp"
 
 	"github.com/osintph/suri/internal/checks"
@@ -46,8 +45,8 @@ var stackTraceSignatures = []errorSignature{
 	{"Node.js", regexp.MustCompile(`at Object\.<anonymous>`)},
 }
 
-// ErrorCheck fetches seed URLs and 5xx inventory URLs looking for server-side
-// stack traces or error messages in the response body.
+// ErrorCheck scans 5xx response bodies cached by the crawler for server-side
+// stack traces. No fresh HTTP requests are made.
 type ErrorCheck struct{}
 
 func (c *ErrorCheck) ID() string                { return "web.error.stack-trace" }
@@ -56,52 +55,29 @@ func (c *ErrorCheck) Severity() checks.Severity { return checks.SeverityMedium }
 func (c *ErrorCheck) Category() checks.Category { return checks.CategoryWeb }
 
 func (c *ErrorCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Finding, error) {
-	seen := make(map[string]bool)
-	var candidates []string
-	for _, u := range target.SeedURLs {
-		if !seen[u] {
-			seen[u] = true
-			candidates = append(candidates, u)
-		}
-	}
-	if target.Inventory != nil {
-		for _, du := range target.Inventory.URLs {
-			if du.ResponseStatus >= 500 && !seen[du.URL] {
-				seen[du.URL] = true
-				candidates = append(candidates, du.URL)
-			}
-		}
+	if target.Inventory == nil {
+		return nil, nil
 	}
 
 	var findings []*checks.Finding
 	emitted := make(map[string]bool)
 
-	for _, rawURL := range candidates {
+	for _, du := range target.Inventory.URLs {
 		select {
 		case <-ctx.Done():
 			return findings, ctx.Err()
 		default:
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-		if err != nil {
-			continue
-		}
-		resp, err := target.HTTP.Do(ctx, req)
-		if err != nil {
-			continue
-		}
-		body := readBody(resp.Body, 256*1024)
-		resp.Body.Close()
-
-		if resp.StatusCode < 500 {
+		if du.ResponseStatus < 500 || len(du.ResponseBody) == 0 {
 			continue
 		}
 
+		body := du.ResponseBody
 		for _, sig := range stackTraceSignatures {
 			if !sig.pattern.Match(body) {
 				continue
 			}
-			key := rawURL + "|" + sig.lang
+			key := du.URL + "|" + sig.lang
 			if emitted[key] {
 				continue
 			}
@@ -110,18 +86,18 @@ func (c *ErrorCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.
 				CheckID:    c.ID(),
 				Severity:   checks.SeverityMedium,
 				Confidence: checks.ConfidenceConfirmed,
-				Title:      fmt.Sprintf("Application error disclosure (%s stack trace) at %s", sig.lang, rawURL),
+				Title:      fmt.Sprintf("Application error disclosure (%s stack trace) at %s", sig.lang, du.URL),
 				Description: fmt.Sprintf(
 					"A %s stack trace or error message was found in the response body at %s "+
 						"(HTTP %d). Stack traces disclose internal file paths, class names, and "+
 						"library versions that assist attackers in crafting targeted exploits.",
-					sig.lang, rawURL, resp.StatusCode,
+					sig.lang, du.URL, du.ResponseStatus,
 				),
-				URL:   rawURL,
+				URL:   du.URL,
 				CWE:   "CWE-209",
 				OWASP: "A05:2021",
 				Evidence: &checks.Evidence{
-					ResponseStatus: resp.StatusCode,
+					ResponseStatus: du.ResponseStatus,
 					ResponseBytes:  excerpt(body, 2048),
 				},
 			})

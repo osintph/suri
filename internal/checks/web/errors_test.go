@@ -18,21 +18,18 @@ package web
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	"github.com/osintph/suri/internal/crawler"
 )
 
 func TestErrorCheckDetectsRubyStackTrace(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Internal Server Error\n\n    from /app/lib/foo.rb:42:in `process'\n    from /app/lib/bar.rb:15:in `run'\n"))
-	}))
-	defer srv.Close()
-
-	target := webTarget(srv)
+	body := []byte("Internal Server Error\n\n    from /app/lib/foo.rb:42:in `process'\n    from /app/lib/bar.rb:15:in `run'\n")
+	urls := []*crawler.DiscoveredURL{
+		{URL: "http://example.com/action", ResponseStatus: 500, ResponseBody: body},
+	}
 	ck := &ErrorCheck{}
-	findings, err := ck.Run(context.Background(), target)
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -45,15 +42,12 @@ func TestErrorCheckDetectsRubyStackTrace(t *testing.T) {
 }
 
 func TestErrorCheckIgnoresClean500(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		w.Write([]byte("Service temporarily unavailable. Please try again later."))
-	}))
-	defer srv.Close()
-
-	target := webTarget(srv)
+	body := []byte("Service temporarily unavailable. Please try again later.")
+	urls := []*crawler.DiscoveredURL{
+		{URL: "http://example.com/action", ResponseStatus: 500, ResponseBody: body},
+	}
 	ck := &ErrorCheck{}
-	findings, err := ck.Run(context.Background(), target)
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -63,19 +57,31 @@ func TestErrorCheckIgnoresClean500(t *testing.T) {
 }
 
 func TestErrorCheckIgnores200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("    from /app/lib/foo.rb:42:in `process'\n"))
-	}))
-	defer srv.Close()
-
-	target := webTarget(srv)
+	body := []byte("    from /app/lib/foo.rb:42:in `process'\n")
+	urls := []*crawler.DiscoveredURL{
+		{URL: "http://example.com/", ResponseStatus: 200, ResponseBody: body},
+	}
 	ck := &ErrorCheck{}
-	findings, err := ck.Run(context.Background(), target)
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings for stack trace in 200 response, got %d", len(findings))
+	}
+}
+
+func TestErrorCheckReadsInventoryNotHTTP(t *testing.T) {
+	body := []byte("Traceback (most recent call last):\n  File \"app.py\", line 42\n")
+	urls := []*crawler.DiscoveredURL{
+		{URL: "http://example.com/err", ResponseStatus: 500, ResponseBody: body},
+	}
+	ck := &ErrorCheck{}
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Error("expected finding from inventory 5xx body")
 	}
 }

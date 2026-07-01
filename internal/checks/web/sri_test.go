@@ -18,23 +18,23 @@ package web
 
 import (
 	"context"
-	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"testing"
+
+	"github.com/osintph/suri/internal/crawler"
 )
 
 func TestSRICheckDetectsMissingIntegrity(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `<html><head><script src="https://cdn.example.com/lib.js"></script></head><body>hello</body></html>`)
-	}))
-	defer srv.Close()
-
-	target := webTarget(srv)
+	body := []byte(`<html><head><script src="https://cdn.example.com/lib.js"></script></head><body>hello</body></html>`)
+	urls := []*crawler.DiscoveredURL{
+		{
+			URL:            "http://127.0.0.1:8080/",
+			ResponseStatus: 200,
+			ContentType:    "text/html; charset=utf-8",
+			ResponseBody:   body,
+		},
+	}
 	ck := &SRICheck{}
-	findings, err := ck.Run(context.Background(), target)
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -47,16 +47,17 @@ func TestSRICheckDetectsMissingIntegrity(t *testing.T) {
 }
 
 func TestSRICheckSkipsSameOrigin(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `<html><head><script src="/static/app.js"></script></head><body>ok</body></html>`)
-	}))
-	defer srv.Close()
-
-	target := webTarget(srv)
+	body := []byte(`<html><head><script src="/static/app.js"></script></head><body>ok</body></html>`)
+	urls := []*crawler.DiscoveredURL{
+		{
+			URL:            "http://127.0.0.1:8080/",
+			ResponseStatus: 200,
+			ContentType:    "text/html",
+			ResponseBody:   body,
+		},
+	}
 	ck := &SRICheck{}
-	findings, err := ck.Run(context.Background(), target)
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -66,20 +67,61 @@ func TestSRICheckSkipsSameOrigin(t *testing.T) {
 }
 
 func TestSRICheckAcceptsIntegrity(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/html")
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintln(w, `<html><head><script src="https://cdn.example.com/lib.js" integrity="sha384-abc123" crossorigin="anonymous"></script></head><body>ok</body></html>`)
-	}))
-	defer srv.Close()
-
-	target := webTarget(srv)
+	body := []byte(`<html><head><script src="https://cdn.example.com/lib.js" integrity="sha384-abc123" crossorigin="anonymous"></script></head><body>ok</body></html>`)
+	urls := []*crawler.DiscoveredURL{
+		{
+			URL:            "http://127.0.0.1:8080/",
+			ResponseStatus: 200,
+			ContentType:    "text/html",
+			ResponseBody:   body,
+		},
+	}
 	ck := &SRICheck{}
-	findings, err := ck.Run(context.Background(), target)
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
 	if err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if len(findings) != 0 {
 		t.Errorf("expected 0 findings for script with integrity attribute, got %d", len(findings))
+	}
+}
+
+func TestSRICheckSkipsNonHTML(t *testing.T) {
+	body := []byte(`{"script": "https://cdn.example.com/lib.js"}`)
+	urls := []*crawler.DiscoveredURL{
+		{
+			URL:            "http://127.0.0.1:8080/api",
+			ResponseStatus: 200,
+			ContentType:    "application/json",
+			ResponseBody:   body,
+		},
+	}
+	ck := &SRICheck{}
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) != 0 {
+		t.Errorf("expected 0 findings for JSON response, got %d", len(findings))
+	}
+}
+
+func TestSRICheckReadsInventoryNotHTTP(t *testing.T) {
+	body := []byte(`<html><script src="https://cdn.example.com/lib.js"></script></html>`)
+	urls := []*crawler.DiscoveredURL{
+		{
+			URL:            "http://127.0.0.1:8080/",
+			ResponseStatus: 200,
+			ContentType:    "text/html",
+			ResponseBody:   body,
+		},
+	}
+	ck := &SRICheck{}
+	findings, err := ck.Run(context.Background(), inventoryTarget(urls))
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Error("expected finding from inventory HTML body")
 	}
 }

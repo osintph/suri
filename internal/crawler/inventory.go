@@ -16,6 +16,8 @@
 
 package crawler
 
+import "net/http"
+
 // Inventory is the output of a crawl. It collects all discovered URLs, forms,
 // parameters, and JavaScript-extracted artifacts ready for check modules.
 type Inventory struct {
@@ -33,6 +35,9 @@ type DiscoveredURL struct {
 	Depth          int
 	ResponseStatus int    // HTTP status from the fetch; 0 means not yet fetched or fetch failed
 	BodyHash       string // hex SHA-256 of first 32 KB of response body; empty when not fetched
+	Cookies        []*http.Cookie // Set-Cookie headers from the response; nil if none or not fetched
+	ContentType    string         // Content-Type response header; empty if not fetched
+	ResponseBody   []byte         // non-nil only for text/html and 5xx responses (capped at 512 KB)
 }
 
 // Form holds a discovered HTML form and its fields.
