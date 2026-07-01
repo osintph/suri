@@ -47,13 +47,13 @@ func TestRunScanImplicitScope(t *testing.T) {
 		"", // no scope file; implicit scope derived from seed URL
 		srv.URL,
 		filepath.Join(tmpDir, "test.db"),
-		"", // domain
-		"", // s3Endpoint
-		"", // azureEndpoint
-		"", // gcsEndpoint
-		"", // adminWordlist
-		0,  // maxBackupProbes
-		2,  // threads
+		"",    // domain
+		"",    // s3Endpoint
+		"",    // azureEndpoint
+		"",    // gcsEndpoint
+		"",    // adminWordlist
+		0,     // maxBackupProbes
+		2,     // threads
 		false, // includeInfo
 		cfg,
 		30*time.Second,

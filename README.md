@@ -9,6 +9,7 @@ Web application security scanner for authorized VAPT engagements.
 
 ## Releases
 
+- **v0.1.5** Quick scan mode. `--scope` is now optional; when omitted, Suri derives an implicit scope from the target URL (hostname and port from scheme). Simpler UX for one-off scans.
 - **v0.1.4** Sensible defaults and quick-win checks. New: cookie flag audit, anti-CSRF token detection on POST forms, application error disclosure for 5xx stack traces, missing SRI on cross-origin scripts. Default scan timeout raised from 15m to 45m. ASCII banner on --version and --help.
 - **v0.1.3** OpenAPI path parameter and JSON body injection. Modern REST APIs documented with OpenAPI specs are now testable across XSS, SQLi (error and time), SSTI, command injection, and open redirect.
 - **v0.1.2** WAF block page detection for Cloudflare, Akamai, Imperva, and AWS WAF. Suppresses false positives when scanning hardened targets.
@@ -100,36 +101,34 @@ Requires Go 1.25 or later. No CGO dependencies.
 
 ## Quickstart
 
-**Quick scan (no scope file required).**
+### Quick scan
+
+For a target you have authorization to scan:
 
 ```bash
-./suri scan https://target.example.com
+suri scan https://target.example.com
 ```
 
-Suri derives an implicit scope from the target URL (hostname and port only). A warning is logged reminding you to verify authorization. Suitable for spot checks against systems you control.
+Suri derives an implicit scope from the target URL and emits a startup warning as a reminder to verify authorization. No scope file required.
 
-**Engagement scan (with explicit scope file).**
+### Formal engagement scans
 
-Write a scope file:
-
-```toml
-# engagement.toml
-engagement_name = "target-corp-2026-q3"
-notes           = "Authorized VAPT. Contact: security@target.example.com"
-
-hostnames = [
-  "target.example.com",
-  "*.target.example.com",
-]
-```
-
-Then scan with the scope file:
+For engagements where scope tracking is a compliance requirement, provide a scope file:
 
 ```bash
-./suri scan --scope engagement.toml https://target.example.com
+cat > scope.toml <<EOF
+engagement_name = "acme-external-2026-q3"
+hostnames = ["target.example.com", "api.target.example.com"]
+ports = [443]
+cloud_buckets = ["*.s3.amazonaws.com"]
+EOF
+
+suri scan --scope scope.toml https://target.example.com
 ```
 
-Output at the end of the scan:
+The scope file bounds the scan, authorizes cloud probing, and tracks the engagement metadata that appears in the report.
+
+Output at the end of either scan:
 
 ```
 Scan complete
@@ -141,7 +140,7 @@ Scan complete
   DB: /tmp/suri-out/a3f2c1d0-....db
 ```
 
-**Step 3: generate a report.**
+**Generate a report.**
 
 Copy the scan ID from the `DB:` line (the UUID portion of the filename).
 
