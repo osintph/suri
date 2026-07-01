@@ -33,8 +33,8 @@ type DiscoveredURL struct {
 	URL            string
 	Source         string // "seed", "html", "sitemap", "robots", "js"
 	Depth          int
-	ResponseStatus int    // HTTP status from the fetch; 0 means not yet fetched or fetch failed
-	BodyHash       string // hex SHA-256 of first 32 KB of response body; empty when not fetched
+	ResponseStatus int            // HTTP status from the fetch; 0 means not yet fetched or fetch failed
+	BodyHash       string         // hex SHA-256 of first 32 KB of response body; empty when not fetched
 	Cookies        []*http.Cookie // Set-Cookie headers from the response; nil if none or not fetched
 	ContentType    string         // Content-Type response header; empty if not fetched
 	ResponseBody   []byte         // non-nil only for text/html and 5xx responses (capped at 512 KB)
