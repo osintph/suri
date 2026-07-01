@@ -100,7 +100,17 @@ Requires Go 1.25 or later. No CGO dependencies.
 
 ## Quickstart
 
-**Step 1: write a scope file.**
+**Quick scan (no scope file required).**
+
+```bash
+./suri scan https://target.example.com
+```
+
+Suri derives an implicit scope from the target URL (hostname and port only). A warning is logged reminding you to verify authorization. Suitable for spot checks against systems you control.
+
+**Engagement scan (with explicit scope file).**
+
+Write a scope file:
 
 ```toml
 # engagement.toml
@@ -113,7 +123,7 @@ hostnames = [
 ]
 ```
 
-**Step 2: run a scan.**
+Then scan with the scope file:
 
 ```bash
 ./suri scan --scope engagement.toml https://target.example.com

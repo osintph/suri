@@ -349,9 +349,21 @@ func newScanCmd() *cobra.Command {
 	)
 
 	cmd := &cobra.Command{
-		Use:   "scan --scope <file> <url>",
+		Use:   "scan [--scope <file>] <url>",
 		Short: "Crawl a target URL and persist a discovery inventory",
-		Args:  cobra.ExactArgs(1),
+		Long: `Crawl a target URL, run the full check suite, and write findings to a database.
+
+Examples:
+  # Quick scan (implicit scope derived from the target URL)
+  suri scan https://target.example.com
+
+  # Engagement scan with explicit scope file (recommended for client work)
+  suri scan --scope engagement.toml https://target.example.com
+
+When --scope is omitted, Suri allows only the hostname and port from the
+target URL. Cloud storage checks are disabled. A warning is logged to
+remind you to verify authorization before scanning.`,
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if debug {
 				slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
@@ -374,8 +386,7 @@ func newScanCmd() *cobra.Command {
 		},
 	}
 
-	cmd.Flags().StringVar(&scopeFile, "scope", "", "path to the TOML scope file (required)")
-	_ = cmd.MarkFlagRequired("scope")
+	cmd.Flags().StringVar(&scopeFile, "scope", "", "path to the TOML scope file (omit for a quick scan with implicit scope)")
 	cmd.Flags().StringVar(&dbPath, "db", "", "path for the findings database (default: <output_dir>/<scan-id>.db)")
 	cmd.Flags().StringVar(&domain, "domain", "", "primary domain of the engagement (used for cloud bucket permutation)")
 	cmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "custom S3-compatible endpoint URL, e.g. http://localhost:9000 for Minio (overrides s3_endpoint in scope file)")
@@ -416,16 +427,36 @@ func runScan(
 ) int {
 	conf := config.Default()
 
-	sc, err := scope.Load(scopePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: cannot load scope file: %v\n", err)
-		return 2
-	}
+	var sc *scope.Scope
+	var scopeContent []byte
 
-	scopeContent, err := os.ReadFile(scopePath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: cannot read scope file: %v\n", err)
-		return 2
+	if scopePath == "" {
+		var err error
+		sc, err = scope.ImplicitScope(seedURL)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			return 2
+		}
+		slog.Warn("no scope file provided, using implicit scope from target URL",
+			"hostname", sc.Hostnames[0],
+			"port", sc.Ports[0],
+		)
+		scopeContent = []byte(fmt.Sprintf(
+			"# Auto-generated implicit scope from target URL: %s\nengagement_name = %q\nhostnames = [%q]\nports = [%d]\n",
+			seedURL, sc.EngagementName, sc.Hostnames[0], sc.Ports[0],
+		))
+	} else {
+		var err error
+		sc, err = scope.Load(scopePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: cannot load scope file: %v\n", err)
+			return 2
+		}
+		scopeContent, err = os.ReadFile(scopePath)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: cannot read scope file: %v\n", err)
+			return 2
+		}
 	}
 
 	// Resolve custom endpoints: CLI flag takes precedence over scope file value.
