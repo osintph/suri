@@ -9,6 +9,7 @@ Web application security scanner for authorized VAPT engagements.
 
 ## Releases
 
+- **v0.1.4** Sensible defaults and quick-win checks. New: cookie flag audit, anti-CSRF token detection on POST forms, application error disclosure for 5xx stack traces, missing SRI on cross-origin scripts. Default scan timeout raised from 15m to 45m. ASCII banner on --version and --help.
 - **v0.1.3** OpenAPI path parameter and JSON body injection. Modern REST APIs documented with OpenAPI specs are now testable across XSS, SQLi (error and time), SSTI, command injection, and open redirect.
 - **v0.1.2** WAF block page detection for Cloudflare, Akamai, Imperva, and AWS WAF. Suppresses false positives when scanning hardened targets.
 - **v0.1.1** Homebrew tap publishing via osintph/tap.
@@ -60,8 +61,8 @@ Download the appropriate binary from the
 [releases page](https://github.com/osintph/suri/releases) and extract:
 
 ```bash
-wget https://github.com/osintph/suri/releases/download/v0.1.3/suri_0.1.3_linux_amd64.tar.gz
-tar xzf suri_0.1.3_linux_amd64.tar.gz
+wget https://github.com/osintph/suri/releases/download/v0.1.4/suri_0.1.4_linux_amd64.tar.gz
+tar xzf suri_0.1.4_linux_amd64.tar.gz
 sudo mv suri /usr/local/bin/
 suri --version
 ```
@@ -74,9 +75,15 @@ go install github.com/osintph/suri/cmd/suri@latest
 
 ### Windows
 
-Download the Windows binary from the
-[releases page](https://github.com/osintph/suri/releases),
-extract the zip, and add the directory to your PATH.
+Download the Windows zip from the [releases page](https://github.com/osintph/suri/releases), extract it, and add the folder containing `suri.exe` to your PATH.
+
+PowerShell one-liner install (adjust the destination path as needed):
+
+```powershell
+Invoke-WebRequest -Uri "https://github.com/osintph/suri/releases/download/v0.1.4/suri_0.1.4_windows_amd64.zip" -OutFile "suri.zip"
+Expand-Archive -Path suri.zip -DestinationPath .
+.\suri.exe --version
+```
 
 ### Build from source
 
@@ -216,6 +223,18 @@ gcs_endpoint   = ""
 **Security headers**
 - CSP, HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, Permissions-Policy
 
+**Cookie hardening**
+- Set-Cookie flag audit: Secure, HttpOnly, and SameSite attributes checked on every response
+
+**Form security**
+- Anti-CSRF token detection on POST forms (authenticity_token, csrf_token, _csrf, _token, and others)
+
+**Application error disclosure**
+- 5xx response bodies scanned for Ruby, Python, Java, PHP, Node.js, and Rails stack trace signatures
+
+**Subresource Integrity**
+- Cross-origin `<script>` tags without an `integrity` attribute flagged per page
+
 **Backup and source exposure**
 - `.git/HEAD`, `.env`, swap files, `.DS_Store`, source maps, common backup extensions
 - Content-verified; SPA catch-all responses are filtered by body hash deduplication
@@ -283,7 +302,7 @@ Suri is designed for authorized assessments against production systems.
 
 **Rate limiting.** The default is 10 requests per second per host. Override with `--rate`.
 
-**Scan timeout.** The default is 15 minutes. The scan stops cleanly at the limit and writes all findings collected up to that point. Override with `--scan-timeout`. Exit status 124 indicates a timeout.
+**Scan timeout.** The default is 45 minutes. The scan stops cleanly at the limit and writes all findings collected up to that point. Override with `--scan-timeout`. Exit status 124 indicates a timeout.
 
 **Serialised timing probes.** SQL injection and command injection timing checks use sleep-based payloads. Only one sleep payload is in-flight against any single host at a time, so the checks cannot exhaust backend thread pools. Probes against different hosts run in parallel.
 
