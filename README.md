@@ -62,8 +62,8 @@ Download the appropriate binary from the
 [releases page](https://github.com/osintph/suri/releases) and extract:
 
 ```bash
-wget https://github.com/osintph/suri/releases/download/v0.1.4/suri_0.1.4_linux_amd64.tar.gz
-tar xzf suri_0.1.4_linux_amd64.tar.gz
+wget https://github.com/osintph/suri/releases/download/v0.1.5/suri_0.1.5_linux_amd64.tar.gz
+tar xzf suri_0.1.5_linux_amd64.tar.gz
 sudo mv suri /usr/local/bin/
 suri --version
 ```
