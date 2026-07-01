@@ -326,6 +326,131 @@ func TestLooksLikeOpenAPISpec(t *testing.T) {
 	}
 }
 
+const openAPI3WithRequestBody = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Test API", "version": "1.0"},
+  "paths": {
+    "/search": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "query": {"type": "string"},
+                  "filter": {"type": "string"}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+const openAPI3WithMixedTypes = `{
+  "openapi": "3.0.0",
+  "info": {"title": "Test API", "version": "1.0"},
+  "paths": {
+    "/create": {
+      "post": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "name":     {"type": "string"},
+                  "age":      {"type": "integer"},
+                  "active":   {"type": "boolean"},
+                  "tags":     {"type": "array"},
+                  "metadata": {"type": "object"}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}`
+
+func TestSwaggerDiscoversJSONBodySchemas(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openapi.json" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(openAPI3WithRequestBody))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := testAPITarget(srv)
+	ck := &SwaggerCheck{}
+	_, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	byName := make(map[string]*crawler.Parameter)
+	for _, p := range target.Inventory.Parameters {
+		byName[p.Name] = p
+	}
+
+	for _, name := range []string{"query", "filter"} {
+		p, ok := byName[name]
+		if !ok {
+			t.Errorf("expected parameter %q in inventory, not found", name)
+			continue
+		}
+		if p.Source != "swagger-body" {
+			t.Errorf("parameter %q: expected source swagger-body, got %q", name, p.Source)
+		}
+		if p.InjectURL == "" {
+			t.Errorf("parameter %q: InjectURL must not be empty", name)
+		}
+	}
+}
+
+func TestSwaggerSkipsNonStringProperties(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/openapi.json" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(openAPI3WithMixedTypes))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := testAPITarget(srv)
+	ck := &SwaggerCheck{}
+	_, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	var bodyParams []*crawler.Parameter
+	for _, p := range target.Inventory.Parameters {
+		if p.Source == "swagger-body" {
+			bodyParams = append(bodyParams, p)
+		}
+	}
+
+	if len(bodyParams) != 1 {
+		t.Fatalf("expected exactly 1 swagger-body parameter (name only), got %d: %v",
+			len(bodyParams), bodyParams)
+	}
+	if bodyParams[0].Name != "name" {
+		t.Errorf("expected parameter name %q, got %q", "name", bodyParams[0].Name)
+	}
+}
+
 func TestSpecBase(t *testing.T) {
 	cases := []struct {
 		specURL  string

@@ -118,8 +118,8 @@ func (c *SQLiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 				Description: fmt.Sprintf(
 					"The parameter %q at %s returns a database error message when injected with "+
 						"SQL metacharacters. Error-based injection allows an attacker to enumerate "+
-						"schema, extract data, and in some configurations execute commands.",
-					param.Name, actualURL,
+						"schema, extract data, and in some configurations execute commands.%s",
+					param.Name, actualURL, paramSourceSuffix(param.Source),
 				),
 				URL:       actualURL,
 				Parameter: param.Name,
@@ -245,8 +245,9 @@ func (c *SQLiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 				Description: fmt.Sprintf(
 					"The parameter %q at %s causes a measurable response delay (%v vs baseline %v) "+
 						"when injected with a sleep-based SQL payload. Time-based blind injection "+
-						"allows data extraction character-by-character.",
+						"allows data extraction character-by-character.%s",
 					param.Name, timingURL, elapsed.Round(time.Millisecond), baseline.Round(time.Millisecond),
+					paramSourceSuffix(param.Source),
 				),
 				URL:       timingURL,
 				Parameter: param.Name,

@@ -193,8 +193,9 @@ func (c *CMDiCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 				Description: fmt.Sprintf(
 					"The parameter %q at %s causes a measurable response delay (%v vs baseline %v) "+
 						"when injected with an OS sleep command via payload %q. "+
-						"This indicates the parameter value is passed to a shell without sanitization.",
+						"This indicates the parameter value is passed to a shell without sanitization.%s",
 					param.Name, actualURL, elapsed.Round(time.Millisecond), baseline.Round(time.Millisecond), p.Payload,
+					paramSourceSuffix(param.Source),
 				),
 				URL:       actualURL,
 				Parameter: param.Name,

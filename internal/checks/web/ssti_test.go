@@ -18,6 +18,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -129,5 +130,50 @@ func TestSSTIPathParameter(t *testing.T) {
 	}
 	if findings[0].Parameter != "t" {
 		t.Errorf("expected parameter=t, got %q", findings[0].Parameter)
+	}
+}
+
+func TestSSTISwaggerBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		val := body["template"]
+		result := val
+		if strings.Contains(val, "{{7*7}}") {
+			result = strings.ReplaceAll(val, "{{7*7}}", "49")
+		} else if strings.Contains(val, "${7*7}") {
+			result = strings.ReplaceAll(val, "${7*7}", "49")
+		}
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "<html><body>%s</body></html>", result)
+	}))
+	defer srv.Close()
+
+	endpointURL := srv.URL + "/api/json/render"
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: endpointURL, Name: "template", Source: "swagger-body", InjectURL: endpointURL},
+	}
+
+	ck := &SSTICheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected SSTI finding for JSON-body template server, got 0")
+	}
+	if findings[0].CheckID != "web.ssti" {
+		t.Errorf("unexpected check ID %q", findings[0].CheckID)
+	}
+	if findings[0].Parameter != "template" {
+		t.Errorf("expected parameter=template, got %q", findings[0].Parameter)
 	}
 }

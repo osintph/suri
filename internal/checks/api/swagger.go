@@ -61,6 +61,20 @@ type operation struct {
 		Name string `json:"name"`
 		In   string `json:"in"`
 	} `json:"parameters"`
+	RequestBody *requestBody `json:"requestBody"`
+}
+
+type requestBody struct {
+	Content map[string]mediaType `json:"content"`
+}
+
+type mediaType struct {
+	Schema *jsonSchema `json:"schema"`
+}
+
+type jsonSchema struct {
+	Type       string                `json:"type"`
+	Properties map[string]jsonSchema `json:"properties"`
 }
 
 // SwaggerCheck probes common paths for Swagger/OpenAPI specs and inventories
@@ -286,6 +300,29 @@ func inventoryEndpoints(inv *crawler.Inventory, specURL, base string, paths map[
 					param.InjectURL = fullURL
 				}
 				inv.Parameters = append(inv.Parameters, param)
+			}
+		}
+
+		// Extract JSON body parameters from POST/PUT/PATCH requestBody schemas.
+		// Only top-level string properties are included in v1.
+		for _, op := range []*operation{item.Post, item.Put, item.Patch} {
+			if op == nil || op.RequestBody == nil {
+				continue
+			}
+			jsonContent, ok := op.RequestBody.Content["application/json"]
+			if !ok || jsonContent.Schema == nil {
+				continue
+			}
+			for propName, propSchema := range jsonContent.Schema.Properties {
+				if propSchema.Type != "string" {
+					continue
+				}
+				inv.Parameters = append(inv.Parameters, &crawler.Parameter{
+					PageURL:   fullURL,
+					Name:      propName,
+					Source:    "swagger-body",
+					InjectURL: fullURL,
+				})
 			}
 		}
 	}

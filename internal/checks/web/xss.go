@@ -92,8 +92,8 @@ func (c *XSSCheck) Run(ctx context.Context, target *checks.Target) ([]*checks.Fi
 					"The parameter %q at %s reflects user input unencoded into the HTML response. "+
 						"The canary token %q was found verbatim in the response body after injecting "+
 						"the payload. This indicates the application outputs the parameter value "+
-						"without HTML entity-encoding, allowing arbitrary script execution.",
-					param.Name, actualURL, canary,
+						"without HTML entity-encoding, allowing arbitrary script execution.%s",
+					param.Name, actualURL, canary, paramSourceSuffix(param.Source),
 				),
 				URL:       actualURL,
 				Parameter: param.Name,

@@ -49,6 +49,8 @@ var redirectParamNames = map[string]bool{
 	"return":       true,
 	"returnto":     true,
 	"returnurl":    true,
+	"return_to":    true,
+	"callback":     true,
 	"dest":         true,
 	"destination":  true,
 	"target":       true,
@@ -129,8 +131,9 @@ func (c *RedirectCheck) Run(ctx context.Context, target *checks.Target) ([]*chec
 				"The parameter %q at %s redirects to an attacker-controlled URL. "+
 					"When set to %q, the server responded with HTTP %d and "+
 					"Location: %s. An attacker can craft a link that appears to "+
-					"point to the legitimate site but redirects victims to a phishing page.",
+					"point to the legitimate site but redirects victims to a phishing page.%s",
 				param.Name, actualURL, canaryURL, resp.StatusCode, location,
+				paramSourceSuffix(param.Source),
 			),
 			URL:       actualURL,
 			Parameter: param.Name,

@@ -90,8 +90,9 @@ func (c *SSTICheck) Run(ctx context.Context, target *checks.Target) ([]*checks.F
 					"The parameter %q at %s evaluates the arithmetic expression %q injected via "+
 						"payload %q. The expected signal %q was found in the response, confirming "+
 						"that the server-side template engine evaluates user input. SSTI can lead "+
-						"to remote code execution depending on the template engine and server context.",
+						"to remote code execution depending on the template engine and server context.%s",
 					param.Name, actualURL, "7*7", p.Payload, expectedSignal,
+					paramSourceSuffix(param.Source),
 				),
 				URL:       actualURL,
 				Parameter: param.Name,

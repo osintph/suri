@@ -18,6 +18,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -363,6 +364,50 @@ func TestSQLiPathParameterErrorBased(t *testing.T) {
 	}
 	if len(findings) == 0 {
 		t.Fatal("expected SQLi finding for path-param error-based server, got 0")
+	}
+	if findings[0].CheckID != "web.sqli.error" {
+		t.Errorf("expected web.sqli.error, got %q", findings[0].CheckID)
+	}
+	if findings[0].Parameter != "id" {
+		t.Errorf("expected parameter=id, got %q", findings[0].Parameter)
+	}
+}
+
+func TestSQLiSwaggerBodyErrorBased(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		val := body["id"]
+		if strings.Contains(val, "'") {
+			w.WriteHeader(http.StatusInternalServerError)
+			w.Write([]byte("You have an error in your SQL syntax"))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("user info"))
+	}))
+	defer srv.Close()
+
+	endpointURL := srv.URL + "/api/json/user"
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: endpointURL, Name: "id", Source: "swagger-body", InjectURL: endpointURL},
+	}
+
+	ck := &SQLiCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected SQLi finding for JSON-body error server, got 0")
 	}
 	if findings[0].CheckID != "web.sqli.error" {
 		t.Errorf("expected web.sqli.error, got %q", findings[0].CheckID)

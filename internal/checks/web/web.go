@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	_ "embed"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -140,6 +141,24 @@ func buildFormProbeReq(ctx context.Context, param *crawler.Parameter, payload st
 	return req, nil
 }
 
+// buildBodyProbeReq builds a POST request with Content-Type: application/json
+// and a JSON body containing only the named parameter set to payload. Sibling
+// fields required by the schema are omitted in v1; most endpoints process
+// requests with partial bodies.
+func buildBodyProbeReq(ctx context.Context, endpointURL, paramName, payload string) (*http.Request, error) {
+	body := map[string]string{paramName: payload}
+	b, err := json.Marshal(body)
+	if err != nil {
+		return nil, fmt.Errorf("marshaling JSON body for %q: %w", endpointURL, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpointURL, bytes.NewReader(b))
+	if err != nil {
+		return nil, fmt.Errorf("building body probe request for %q: %w", endpointURL, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	return req, nil
+}
+
 // buildProbeReq builds the appropriate request for a parameter, injecting payload.
 func buildProbeReq(ctx context.Context, param *crawler.Parameter, payload string) (*http.Request, error) {
 	switch param.Source {
@@ -149,6 +168,8 @@ func buildProbeReq(ctx context.Context, param *crawler.Parameter, payload string
 		return buildFormProbeReq(ctx, param, payload)
 	case "swagger-path":
 		return buildPathProbeReq(ctx, param.InjectURL, param.Name, payload)
+	case "swagger-body":
+		return buildBodyProbeReq(ctx, param.InjectURL, param.Name, payload)
 	default:
 		return nil, fmt.Errorf("unsupported parameter source %q", param.Source)
 	}
@@ -195,9 +216,27 @@ func baselineValue(injectURL, paramName string) string {
 // baselineForParam returns a safe baseline probe value for param.
 // For path parameters there is no query string to extract an original value
 // from, so "1" is used as a placeholder unlikely to trigger backend latency.
+// For JSON body parameters "test" is used for the same reason.
 func baselineForParam(param *crawler.Parameter) string {
 	if param.Source == "swagger-path" {
 		return "1"
 	}
+	if param.Source == "swagger-body" {
+		return "test"
+	}
 	return baselineValue(param.InjectURL, param.Name)
+}
+
+// paramSourceSuffix returns a description suffix identifying how the payload
+// was delivered, so operators can distinguish JSON-body findings from path-param
+// or query findings in reports.
+func paramSourceSuffix(source string) string {
+	switch source {
+	case "swagger-path":
+		return " Payload substituted into URL path template."
+	case "swagger-body":
+		return " Payload delivered in JSON request body (Content-Type: application/json)."
+	default:
+		return ""
+	}
 }

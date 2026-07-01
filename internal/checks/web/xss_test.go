@@ -18,6 +18,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -131,5 +132,45 @@ func TestXSSPathParameterReflected(t *testing.T) {
 	}
 	if strings.Contains(f.URL, "{name}") {
 		t.Errorf("finding URL should be the actual injected URL, not the template; got %q", f.URL)
+	}
+}
+
+func TestXSSSwaggerBodyReflected(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		val := body["query"]
+		w.Header().Set("Content-Type", "text/html")
+		fmt.Fprintf(w, "<html><body>%s</body></html>", val)
+	}))
+	defer srv.Close()
+
+	endpointURL := srv.URL + "/api/json/search"
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: endpointURL, Name: "query", Source: "swagger-body", InjectURL: endpointURL},
+	}
+
+	ck := &XSSCheck{}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected XSS finding for JSON-body reflective server, got 0")
+	}
+	f := findings[0]
+	if f.CheckID != "web.xss.reflected" {
+		t.Errorf("unexpected check ID %q", f.CheckID)
+	}
+	if f.Parameter != "query" {
+		t.Errorf("expected parameter=query, got %q", f.Parameter)
 	}
 }

@@ -18,6 +18,7 @@ package web
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -218,6 +219,48 @@ func TestCMDiPathParameterTiming(t *testing.T) {
 	}
 	if len(findings) == 0 {
 		t.Fatal("expected CMDi finding for path-param timing-vulnerable server, got 0")
+	}
+	if findings[0].CheckID != "web.cmdi" {
+		t.Errorf("unexpected check ID %q", findings[0].CheckID)
+	}
+	if findings[0].Parameter != "host" {
+		t.Errorf("expected parameter=host, got %q", findings[0].Parameter)
+	}
+}
+
+func TestCMDiSwaggerBodyTiming(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		var body map[string]string
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		val := body["host"]
+		if strings.Contains(strings.ToLower(val), "sleep") {
+			time.Sleep(100 * time.Millisecond)
+		}
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("ping ok"))
+	}))
+	defer srv.Close()
+
+	endpointURL := srv.URL + "/api/json/ping"
+	target := webTarget(srv)
+	target.Inventory.Parameters = []*crawler.Parameter{
+		{PageURL: endpointURL, Name: "host", Source: "swagger-body", InjectURL: endpointURL},
+	}
+
+	ck := &CMDiCheck{TimingThresholdMs: 50}
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(findings) == 0 {
+		t.Fatal("expected CMDi finding for JSON-body timing-vulnerable server, got 0")
 	}
 	if findings[0].CheckID != "web.cmdi" {
 		t.Errorf("unexpected check ID %q", findings[0].CheckID)
