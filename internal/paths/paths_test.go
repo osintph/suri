@@ -19,6 +19,7 @@ package paths_test
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -31,7 +32,7 @@ func TestUserDataDirXDG(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "/tmp/xdg-test/suri"
+	want := filepath.Join("/tmp/xdg-test", "suri")
 	if dir != want {
 		t.Errorf("got %q, want %q", dir, want)
 	}
@@ -43,8 +44,16 @@ func TestUserDataDirFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(dir, ".suri") {
-		t.Errorf("expected dir to contain .suri, got %q", dir)
+	// On Windows the fallback is %LOCALAPPDATA%\suri (no leading dot).
+	// On Unix it is $HOME/.suri.
+	var wantSuffix string
+	if runtime.GOOS == "windows" {
+		wantSuffix = filepath.Join("Local", "suri")
+	} else {
+		wantSuffix = ".suri"
+	}
+	if !strings.Contains(dir, wantSuffix) {
+		t.Errorf("expected dir to contain %q, got %q", wantSuffix, dir)
 	}
 	if !filepath.IsAbs(dir) {
 		t.Errorf("expected absolute path, got %q", dir)
@@ -57,7 +66,7 @@ func TestScansRootComposition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	want := "/tmp/xdg-test/suri/scans"
+	want := filepath.Join("/tmp/xdg-test", "suri", "scans")
 	if root != want {
 		t.Errorf("got %q, want %q", root, want)
 	}
