@@ -286,13 +286,16 @@ Reports should respect the scan's filtering choice.
 
 ---
 
-### Scan management subcommands
+### Scan management subcommands (RESOLVED in v0.1.7)
 
 **Observed:** No way to list or delete past scan DBs. Operators accumulate
 `.db` files in `pwd` over time.
 
-**Fix:** Add `suri list-scans` and `suri delete-scan <id>` subcommands.
-Goes hand-in-hand with the FK CASCADE work above.
+**Resolved:** v0.1.7 (Session 15) adds structured output directories
+(`~/.suri/scans/<engagement>/<scan-id>/`), `suri list-scans`, and
+`suri delete-scan`. Each scan now writes `scan.db`, `scan.html`, and
+`metadata.json` to its own directory. List and delete respect
+`--output-dir` for non-default scans roots.
 
 ---
 

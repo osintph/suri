@@ -18,6 +18,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -57,7 +58,7 @@ func TestRunScanImplicitScope(t *testing.T) {
 		context.Background(),
 		"", // no scope file; implicit scope derived from seed URL
 		srv.URL,
-		filepath.Join(tmpDir, "test.db"),
+		"",    // dbFlag
 		"",    // domain
 		"",    // s3Endpoint
 		"",    // azureEndpoint
@@ -70,6 +71,7 @@ func TestRunScanImplicitScope(t *testing.T) {
 		30*time.Second,
 		true,   // noReport: keep test fast, report tested separately
 		"html", // reportFormat
+		tmpDir, // outputDirFlag
 	)
 
 	if code != 0 {
@@ -86,23 +88,23 @@ func TestScanAutoGeneratesHTMLReport(t *testing.T) {
 	code := runScan(
 		context.Background(),
 		"", srv.URL,
-		filepath.Join(tmpDir, "test.db"),
-		"", "", "", "", "",
+		"", "", "", "", "", "",
 		0, 2, false,
 		minimalCrawlCfg(),
 		30*time.Second,
 		false, "html",
+		tmpDir,
 	)
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d", code)
 	}
 
-	matches, err := filepath.Glob(filepath.Join(tmpDir, "*.html"))
+	matches, err := filepath.Glob(filepath.Join(tmpDir, "*", "*", "scan.html"))
 	if err != nil {
 		t.Fatalf("glob: %v", err)
 	}
 	if len(matches) != 1 {
-		t.Fatalf("expected 1 .html report, found %d: %v", len(matches), matches)
+		t.Fatalf("expected 1 scan.html, found %d: %v", len(matches), matches)
 	}
 
 	data, err := os.ReadFile(matches[0])
@@ -112,9 +114,8 @@ func TestScanAutoGeneratesHTMLReport(t *testing.T) {
 	if len(data) == 0 {
 		t.Error("report file is empty")
 	}
-	// The scan ID is the base name of the report file without extension.
-	// RenderHTML embeds it in the template output.
-	scanID := strings.TrimSuffix(filepath.Base(matches[0]), ".html")
+	// The scan ID is the parent directory name.
+	scanID := filepath.Base(filepath.Dir(matches[0]))
 	if !strings.Contains(string(data), scanID) {
 		t.Errorf("HTML report does not contain scan ID %q", scanID)
 	}
@@ -129,20 +130,20 @@ func TestScanNoReportFlag(t *testing.T) {
 	code := runScan(
 		context.Background(),
 		"", srv.URL,
-		filepath.Join(tmpDir, "test.db"),
-		"", "", "", "", "",
+		"", "", "", "", "", "",
 		0, 2, false,
 		minimalCrawlCfg(),
 		30*time.Second,
 		true, "html", // noReport=true
+		tmpDir,
 	)
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d", code)
 	}
 
-	matches, _ := filepath.Glob(filepath.Join(tmpDir, "*.html"))
+	matches, _ := filepath.Glob(filepath.Join(tmpDir, "*", "*", "scan.html"))
 	if len(matches) != 0 {
-		t.Errorf("expected no .html files with --no-report, found %d: %v", len(matches), matches)
+		t.Errorf("expected no scan.html with --no-report, found %d: %v", len(matches), matches)
 	}
 }
 
@@ -155,24 +156,24 @@ func TestScanReportFormatJSON(t *testing.T) {
 	code := runScan(
 		context.Background(),
 		"", srv.URL,
-		filepath.Join(tmpDir, "test.db"),
-		"", "", "", "", "",
+		"", "", "", "", "", "",
 		0, 2, false,
 		minimalCrawlCfg(),
 		30*time.Second,
 		false, "json",
+		tmpDir,
 	)
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d", code)
 	}
 
-	htmlMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*.html"))
+	htmlMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*", "*", "scan.html"))
 	if len(htmlMatches) != 0 {
-		t.Errorf("expected no .html files with --report-format json, found %d", len(htmlMatches))
+		t.Errorf("expected no scan.html with --report-format json, found %d", len(htmlMatches))
 	}
-	jsonMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*.json"))
+	jsonMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*", "*", "scan.json"))
 	if len(jsonMatches) != 1 {
-		t.Errorf("expected 1 .json file, found %d: %v", len(jsonMatches), jsonMatches)
+		t.Errorf("expected 1 scan.json, found %d: %v", len(jsonMatches), jsonMatches)
 	}
 }
 
@@ -185,24 +186,24 @@ func TestScanReportFormatBoth(t *testing.T) {
 	code := runScan(
 		context.Background(),
 		"", srv.URL,
-		filepath.Join(tmpDir, "test.db"),
-		"", "", "", "", "",
+		"", "", "", "", "", "",
 		0, 2, false,
 		minimalCrawlCfg(),
 		30*time.Second,
 		false, "both",
+		tmpDir,
 	)
 	if code != 0 {
 		t.Fatalf("expected exit code 0, got %d", code)
 	}
 
-	htmlMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*.html"))
+	htmlMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*", "*", "scan.html"))
 	if len(htmlMatches) != 1 {
-		t.Errorf("expected 1 .html file with --report-format both, found %d", len(htmlMatches))
+		t.Errorf("expected 1 scan.html with --report-format both, found %d", len(htmlMatches))
 	}
-	jsonMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*.json"))
+	jsonMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*", "*", "scan.json"))
 	if len(jsonMatches) != 1 {
-		t.Errorf("expected 1 .json file with --report-format both, found %d", len(jsonMatches))
+		t.Errorf("expected 1 scan.json with --report-format both, found %d", len(jsonMatches))
 	}
 }
 
@@ -221,14 +222,146 @@ func TestScanContinuesIfReportFails(t *testing.T) {
 	code := runScan(
 		context.Background(),
 		"", srv.URL,
-		filepath.Join(tmpDir, "test.db"),
-		"", "", "", "", "",
+		"", "", "", "", "", "",
 		0, 2, false,
 		minimalCrawlCfg(),
 		30*time.Second,
 		false, "html",
+		tmpDir,
 	)
 	if code != 0 {
 		t.Errorf("scan should succeed even when report generation fails, got exit code %d", code)
+	}
+}
+
+func TestScanWritesMetadataJSON(t *testing.T) {
+	srv := minimalSrv()
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+
+	code := runScan(
+		context.Background(),
+		"", srv.URL,
+		"", "", "", "", "", "",
+		0, 2, false,
+		minimalCrawlCfg(),
+		30*time.Second,
+		true, "html",
+		tmpDir,
+	)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	matches, err := filepath.Glob(filepath.Join(tmpDir, "*", "*", "metadata.json"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected 1 metadata.json, got %d: %v", len(matches), matches)
+	}
+
+	data, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatalf("reading metadata: %v", err)
+	}
+	var meta ScanMetadata
+	if err := json.Unmarshal(data, &meta); err != nil {
+		t.Fatalf("parsing metadata.json: %v", err)
+	}
+	if meta.ScanID == "" {
+		t.Error("metadata.scan_id is empty")
+	}
+	if meta.StartedAt == "" {
+		t.Error("metadata.started_at is empty")
+	}
+	if meta.TargetURL != srv.URL {
+		t.Errorf("metadata.target_url = %q, want %q", meta.TargetURL, srv.URL)
+	}
+}
+
+func TestScanStructuredDirLayout(t *testing.T) {
+	srv := minimalSrv()
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+
+	code := runScan(
+		context.Background(),
+		"", srv.URL,
+		"", "", "", "", "", "",
+		0, 2, false,
+		minimalCrawlCfg(),
+		30*time.Second,
+		false, "html",
+		tmpDir,
+	)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	dbMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*", "*", "scan.db"))
+	if len(dbMatches) != 1 {
+		t.Errorf("expected 1 scan.db, got %d: %v", len(dbMatches), dbMatches)
+	}
+	htmlMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*", "*", "scan.html"))
+	if len(htmlMatches) != 1 {
+		t.Errorf("expected 1 scan.html, got %d: %v", len(htmlMatches), htmlMatches)
+	}
+	metaMatches, _ := filepath.Glob(filepath.Join(tmpDir, "*", "*", "metadata.json"))
+	if len(metaMatches) != 1 {
+		t.Errorf("expected 1 metadata.json, got %d: %v", len(metaMatches), metaMatches)
+	}
+}
+
+func TestScanOutputDirFlag(t *testing.T) {
+	srv := minimalSrv()
+	defer srv.Close()
+
+	customDir := t.TempDir()
+
+	code := runScan(
+		context.Background(),
+		"", srv.URL,
+		"", "", "", "", "", "",
+		0, 2, false,
+		minimalCrawlCfg(),
+		30*time.Second,
+		true, "html",
+		customDir,
+	)
+	if code != 0 {
+		t.Fatalf("expected exit code 0, got %d", code)
+	}
+
+	matches, _ := filepath.Glob(filepath.Join(customDir, "*", "*", "scan.db"))
+	if len(matches) != 1 {
+		t.Errorf("expected scan.db under custom output dir, got %d matches: %v", len(matches), matches)
+	}
+}
+
+func TestFindScanDB(t *testing.T) {
+	root := t.TempDir()
+	scanDir := filepath.Join(root, "acme", "scan-abc")
+	if err := os.MkdirAll(scanDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	dbPath := filepath.Join(scanDir, "scan.db")
+	if err := os.WriteFile(dbPath, []byte{}, 0o600); err != nil {
+		t.Fatalf("creating db: %v", err)
+	}
+
+	got, err := findScanDB(root, "scan-abc")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != dbPath {
+		t.Errorf("findScanDB got %q, want %q", got, dbPath)
+	}
+
+	// Not found.
+	if _, err := findScanDB(root, "nonexistent"); err == nil {
+		t.Error("expected error for missing scan ID")
 	}
 }

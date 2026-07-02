@@ -18,11 +18,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -32,9 +35,9 @@ import (
 	"github.com/osintph/suri/internal/checks/api"
 	"github.com/osintph/suri/internal/checks/cloud"
 	"github.com/osintph/suri/internal/checks/web"
-	"github.com/osintph/suri/internal/config"
 	"github.com/osintph/suri/internal/crawler"
 	internalhttp "github.com/osintph/suri/internal/http"
+	"github.com/osintph/suri/internal/paths"
 	"github.com/osintph/suri/internal/report"
 	"github.com/osintph/suri/internal/scope"
 	"github.com/osintph/suri/internal/store"
@@ -60,6 +63,26 @@ var bannerStr string
 
 // quietFlag suppresses the banner; set via --quiet / -q.
 var quietFlag bool
+
+// ScanMetadata is written to metadata.json inside each scan directory.
+type ScanMetadata struct {
+	ScanID         string         `json:"scan_id"`
+	EngagementName string         `json:"engagement_name"`
+	StartedAt      string         `json:"started_at"`
+	CompletedAt    string         `json:"completed_at"`
+	TargetURL      string         `json:"target_url"`
+	ScopeSummary   ScopeSummary   `json:"scope_summary"`
+	FindingsTotal  int            `json:"findings_total"`
+	FindingsBySev  map[string]int `json:"findings_by_severity"`
+	ExitStatus     int            `json:"exit_status"`
+	SuriVersion    string         `json:"suri_version"`
+}
+
+// ScopeSummary records the scope used for a scan, embedded in ScanMetadata.
+type ScopeSummary struct {
+	Hostnames []string `json:"hostnames"`
+	Ports     []int    `json:"ports"`
+}
 
 func isTTY(f *os.File) bool {
 	stat, err := f.Stat()
@@ -107,6 +130,8 @@ func main() {
 		newReportCmd(),
 		newDiffCmd(),
 		newWordlistsCmd(),
+		newListScansCmd(),
+		newDeleteScanCmd(),
 		newVersionCmd(),
 	)
 
@@ -138,19 +163,33 @@ func newStubCmd(name, msg string) *cobra.Command {
 
 func newReportCmd() *cobra.Command {
 	var (
-		scanID  string
-		format  string
-		outPath string
-		dbPath  string
+		scanID    string
+		format    string
+		outPath   string
+		dbPath    string
+		outputDir string
 	)
 	cmd := &cobra.Command{
 		Use:   "report",
 		Short: "Generate a report from a scan",
+		Long: `Generate a report from a completed scan.
+
+When --db is omitted, Suri searches ~/.suri/scans/ for the scan ID.
+Use --output-dir to search a custom scans root instead.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			resolvedDB := dbPath
 			if resolvedDB == "" {
+				root := outputDir
+				if root == "" {
+					var err error
+					root, err = paths.ScansRoot()
+					if err != nil {
+						fmt.Fprintf(os.Stderr, "error: %v\n", err)
+						os.Exit(1)
+					}
+				}
 				var err error
-				resolvedDB, err = store.FindLatestDB(".")
+				resolvedDB, err = findScanDB(root, scanID)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "error: %v\n", err)
 					os.Exit(1)
@@ -193,8 +232,26 @@ func newReportCmd() *cobra.Command {
 	_ = cmd.MarkFlagRequired("format")
 	cmd.Flags().StringVar(&outPath, "out", "", "output file path (required)")
 	_ = cmd.MarkFlagRequired("out")
-	cmd.Flags().StringVar(&dbPath, "db", "", "path to findings database (default: most recent .db in current directory)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "path to findings database (default: search ~/.suri/scans/ by scan ID)")
+	cmd.Flags().StringVar(&outputDir, "output-dir", "", "scans root to search when --db is not provided (default: ~/.suri/scans)")
 	return cmd
+}
+
+// findScanDB walks root for <root>/*/<scanID>/scan.db and returns the path.
+func findScanDB(root, scanID string) (string, error) {
+	pattern := filepath.Join(root, "*", scanID, "scan.db")
+	matches, err := filepath.Glob(pattern)
+	if err != nil {
+		return "", fmt.Errorf("searching for scan %q: %w", scanID, err)
+	}
+	switch len(matches) {
+	case 0:
+		return "", fmt.Errorf("scan %q not found in %s (use --db to specify the database path)", scanID, root)
+	case 1:
+		return matches[0], nil
+	default:
+		return "", fmt.Errorf("scan ID %q is ambiguous (%d matches), use --db to specify the database path", scanID, len(matches))
+	}
 }
 
 func newDiffCmd() *cobra.Command {
@@ -333,6 +390,7 @@ func newScanCmd() *cobra.Command {
 	var (
 		scopeFile       string
 		dbPath          string
+		outputDir       string
 		domain          string
 		s3Endpoint      string
 		azureEndpoint   string
@@ -352,15 +410,23 @@ func newScanCmd() *cobra.Command {
 
 	cmd := &cobra.Command{
 		Use:   "scan [--scope <file>] <url>",
-		Short: "Crawl a target URL and persist a discovery inventory",
-		Long: `Crawl a target URL, run the full check suite, and write findings to a database.
+		Short: "Crawl a target URL and run the full check suite",
+		Long: `Crawl a target URL, run the full check suite, and write findings to a structured output directory.
+
+Output is written to ~/.suri/scans/<engagement>/<scan-id>/ by default:
+  scan.db        findings database
+  scan.html      auto-generated HTML report (unless --no-report)
+  metadata.json  scan metadata
 
 Examples:
   # Quick scan (implicit scope derived from the target URL)
   suri scan https://target.example.com
 
-  # Engagement scan with explicit scope file (recommended for client work)
+  # Engagement scan with explicit scope file
   suri scan --scope engagement.toml https://target.example.com
+
+  # Custom output directory
+  suri scan --output-dir /mnt/engagement/ https://target.example.com
 
 When --scope is omitted, Suri allows only the hostname and port from the
 target URL. Cloud storage checks are disabled. A warning is logged to
@@ -381,7 +447,7 @@ remind you to verify authorization before scanning.`,
 			code := runScan(cmd.Context(), scopeFile, args[0], dbPath, domain,
 				s3Endpoint, azureEndpoint, gcsEndpoint, adminWordlist,
 				maxBackupProbes, threads, includeInfo, cfg, scanTimeout,
-				noReport, reportFormat)
+				noReport, reportFormat, outputDir)
 			if code != 0 {
 				os.Exit(code)
 			}
@@ -390,7 +456,8 @@ remind you to verify authorization before scanning.`,
 	}
 
 	cmd.Flags().StringVar(&scopeFile, "scope", "", "path to the TOML scope file (omit for a quick scan with implicit scope)")
-	cmd.Flags().StringVar(&dbPath, "db", "", "path for the findings database (default: <output_dir>/<scan-id>.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "override the findings database path (default: <output-dir>/<engagement>/<scan-id>/scan.db)")
+	cmd.Flags().StringVar(&outputDir, "output-dir", "", "scans root directory (default: ~/.suri/scans)")
 	cmd.Flags().StringVar(&domain, "domain", "", "primary domain of the engagement (used for cloud bucket permutation)")
 	cmd.Flags().StringVar(&s3Endpoint, "s3-endpoint", "", "custom S3-compatible endpoint URL, e.g. http://localhost:9000 for Minio (overrides s3_endpoint in scope file)")
 	cmd.Flags().StringVar(&azureEndpoint, "azure-endpoint", "", "custom Azure Blob-compatible endpoint URL (overrides azure_endpoint in scope file)")
@@ -453,8 +520,9 @@ func runScan(
 	scanTimeout time.Duration,
 	noReport bool,
 	reportFormat string,
+	outputDirFlag string,
 ) int {
-	conf := config.Default()
+	startTime := time.Now()
 
 	var sc *scope.Scope
 	var scopeContent []byte
@@ -502,16 +570,44 @@ func runScan(
 		resolvedGCSEndpoint = sc.GCSEndpoint
 	}
 
-	// Generate a scan ID and resolve the database path.
+	// Resolve scans root.
+	scansRoot := outputDirFlag
+	if scansRoot == "" {
+		var err error
+		scansRoot, err = paths.ScansRoot()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: cannot resolve scans root: %v\n", err)
+			return 2
+		}
+	}
+
+	// Derive engagement directory name.
+	var engDirName string
+	if scopePath == "" {
+		u, _ := url.Parse(seedURL)
+		engDirName = paths.SanitizeEngagementName(u.Hostname()) + "-" + startTime.UTC().Format("20060102")
+	} else {
+		engDirName = paths.SanitizeEngagementName(sc.EngagementName)
+	}
+
+	// Generate a scan ID.
 	scanID, err := store.NewScanID()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		return 1
 	}
 
+	// Create the structured scan directory.
+	scanDir, err := paths.EnsureScanDir(scansRoot, engDirName, scanID)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		return 1
+	}
+
+	// Resolve DB path: --db flag overrides, else inside scan dir.
 	resolvedDBPath := dbFlag
 	if resolvedDBPath == "" {
-		resolvedDBPath = filepath.Join(conf.OutputDir, scanID+".db")
+		resolvedDBPath = filepath.Join(scanDir, "scan.db")
 	}
 
 	st, err := store.Open(resolvedDBPath)
@@ -529,7 +625,7 @@ func runScan(
 
 	if err := st.InsertScan(ctx, store.ScanRecord{
 		ID:              scanID,
-		StartTime:       time.Now(),
+		StartTime:       startTime,
 		ScopeFilePath:   scopePath,
 		ScopeSnapshotID: snapshotID,
 		SeedURLs:        []string{seedURL},
@@ -607,6 +703,7 @@ func runScan(
 	}
 
 	var mediumPlusFindings, infoFindings int
+	findingsBySev := make(map[string]int)
 	for _, ck := range allChecks {
 		if scanCtx.Err() != nil {
 			break // scan timed out; no point starting new checks
@@ -649,6 +746,7 @@ func runScan(
 			}); fErr != nil {
 				slog.Error("failed to persist finding", "check", ck.ID(), "err", fErr)
 			} else {
+				findingsBySev[string(f.Severity)]++
 				if f.Severity == checks.SeverityInfo {
 					infoFindings++
 				} else {
@@ -673,6 +771,7 @@ func runScan(
 		}); fErr != nil {
 			slog.Error("failed to persist WAF finding", "err", fErr)
 		} else {
+			findingsBySev[string(f.Severity)]++
 			infoFindings++
 		}
 	}
@@ -696,8 +795,33 @@ func runScan(
 		slog.Error("failed to finalize scan record", "err", finalErr)
 	}
 
+	// Write metadata.json to scan dir.
+	meta := ScanMetadata{
+		ScanID:         scanID,
+		EngagementName: engDirName,
+		StartedAt:      startTime.UTC().Format(time.RFC3339),
+		CompletedAt:    time.Now().UTC().Format(time.RFC3339),
+		TargetURL:      seedURL,
+		ScopeSummary: ScopeSummary{
+			Hostnames: sc.Hostnames,
+			Ports:     sc.Ports,
+		},
+		FindingsTotal: mediumPlusFindings + infoFindings,
+		FindingsBySev: findingsBySev,
+		ExitStatus:    exitStatus,
+		SuriVersion:   version,
+	}
+	if metaBytes, merr := json.MarshalIndent(meta, "", "  "); merr == nil {
+		metaPath := filepath.Join(scanDir, "metadata.json")
+		if writeErr := os.WriteFile(metaPath, metaBytes, 0o600); writeErr != nil {
+			slog.Warn("failed to write metadata.json", "err", writeErr)
+		}
+	} else {
+		slog.Warn("failed to marshal scan metadata", "err", merr)
+	}
+
 	if exitStatus == 124 {
-		fmt.Printf("scan stopped after timeout, partial results in %s\n", resolvedDBPath)
+		fmt.Printf("scan stopped after timeout, partial results in %s/\n", scanDir)
 		return exitStatus
 	}
 
@@ -717,20 +841,32 @@ func runScan(
 	} else {
 		fmt.Printf("  Findings:             %d\n", mediumPlusFindings)
 	}
-	fmt.Printf("  DB: %s\n", resolvedDBPath)
+
+	// Print scan directory (abbreviated to ~/... when inside home).
+	displayDir := scanDir
+	if home, herr := os.UserHomeDir(); herr == nil {
+		if rel, rerr := filepath.Rel(home, scanDir); rerr == nil && !strings.HasPrefix(rel, "..") {
+			displayDir = filepath.Join("~", rel)
+		}
+	}
+	fmt.Printf("  Location: %s/\n", displayDir)
+	if dbFlag == "" {
+		fmt.Printf("  DB: scan.db\n")
+	} else {
+		fmt.Printf("  DB: %s\n", resolvedDBPath)
+	}
 
 	if !noReport {
 		fmts := []string{reportFormat}
 		if reportFormat == "both" {
 			fmts = []string{"html", "json"}
 		}
-		outDir := filepath.Dir(resolvedDBPath)
 		for _, fmtName := range fmts {
-			outPath := filepath.Join(outDir, scanID+"."+fmtName)
+			outPath := filepath.Join(scanDir, "scan."+fmtName)
 			if genErr := autoReportFn(ctx, st, scanID, outPath, fmtName, version); genErr != nil {
 				slog.Warn("auto-report generation failed", "format", fmtName, "err", genErr)
 			} else {
-				fmt.Printf("  Report: %s\n", outPath)
+				fmt.Printf("  Report: scan.%s\n", fmtName)
 			}
 		}
 	}

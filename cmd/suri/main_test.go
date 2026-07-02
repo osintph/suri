@@ -65,6 +65,7 @@ ips             = ["127.0.0.1"]
 		100*time.Millisecond, // scan timeout
 		true,                 // noReport: skip for timeout test
 		"html",               // reportFormat
+		tmpDir,               // outputDir: keep output self-contained
 	)
 	elapsed := time.Since(start)
 

@@ -9,6 +9,7 @@ Web application security scanner for authorized VAPT engagements.
 
 ## Releases
 
+- **v0.1.7** Structured output directory. Scans now write to `~/.suri/scans/<engagement>/<scan-id>/` with `scan.db`, `scan.html`, and `metadata.json`. New subcommands `suri list-scans` and `suri delete-scan` for scan management. `--output-dir` flag on `scan`, `report`, `list-scans`, and `delete-scan` overrides the default scans root.
 - **v0.1.6** Auto-generated HTML report after scan completion. `--no-report` skips generation; `--report-format` supports html (default), json, or both. The report subcommand remains for regenerating historical scan reports.
 - **v0.1.5** Quick scan mode. `--scope` is now optional; when omitted, Suri derives an implicit scope from the target URL (hostname and port from scheme). Simpler UX for one-off scans.
 - **v0.1.4** Sensible defaults and quick-win checks. New: cookie flag audit, anti-CSRF token detection on POST forms, application error disclosure for 5xx stack traces, missing SRI on cross-origin scripts. Default scan timeout raised from 15m to 45m. ASCII banner on --version and --help.
@@ -50,8 +51,8 @@ On first run, macOS Gatekeeper will block the unsigned binary. The `xattr` line 
 Download the binary from the [releases page](https://github.com/osintph/suri/releases) and install:
 
 ```bash
-wget https://github.com/osintph/suri/releases/download/v0.1.6/suri_0.1.6_linux_amd64.tar.gz
-tar xzf suri_0.1.6_linux_amd64.tar.gz
+wget https://github.com/osintph/suri/releases/download/v0.1.7/suri_0.1.7_linux_amd64.tar.gz
+tar xzf suri_0.1.7_linux_amd64.tar.gz
 sudo mv suri /usr/local/bin/
 suri --version
 ```
@@ -143,16 +144,55 @@ Scan complete
   Unique parameters:    12
   JS artifacts:         8
   Findings:             2 (info: 14 suppressed)
-  DB: /tmp/suri-out/a3f2c1d0-....db
-  Report: /tmp/suri-out/a3f2c1d0-....html
+  Location: ~/.suri/scans/acme-external-2026-q3/<scan-id>/
+  DB: scan.db
+  Report: scan.html
 ```
 
 **Regenerate a report.**
 
-Every scan auto-generates an HTML report. To regenerate, convert format, or report on a historical scan:
+Every scan auto-generates an HTML report. To regenerate or convert format, provide the scan ID:
 
 ```bash
-suri report --scan <scan-id> --db <db-path> --format html --out <file>
+suri report --scan <scan-id> --format html --out report.html
+```
+
+Suri searches `~/.suri/scans/` for the scan. Use `--db` to point directly at a database file, or `--output-dir` to search a custom scans root.
+
+---
+
+## Where output goes
+
+Each scan writes to a structured directory:
+
+```
+~/.suri/scans/<engagement>/<scan-id>/
+  scan.db        SQLite findings database
+  scan.html      auto-generated HTML report
+  metadata.json  scan ID, timing, scope summary, and finding counts
+```
+
+The scans root defaults to `$XDG_DATA_HOME/suri/scans` (when `$XDG_DATA_HOME` is set), then `~/.suri/scans` on Unix, or `%LOCALAPPDATA%\suri\scans` on Windows. Override with `--output-dir` on `scan`, `report`, `list-scans`, or `delete-scan`.
+
+The engagement directory name comes from `engagement_name` in your scope file. For quick scans (no scope file), it is `<hostname>-<YYYYMMDD>`. Pre-v0.1.7 `.db` files in the current directory are not auto-migrated; move them manually if needed.
+
+### Listing and cleaning scans
+
+```bash
+# List recent scans (newest first, default limit 20)
+suri list-scans
+
+# Filter by engagement
+suri list-scans --engagement acme-external-2026-q3
+
+# Delete a scan by ID
+suri delete-scan <scan-id>
+
+# Preview bulk-delete of scans older than 30 days
+suri delete-scan --older-than 30d --dry-run
+
+# Bulk-delete without confirmation prompt
+suri delete-scan --older-than 30d --yes
 ```
 
 ---
@@ -270,10 +310,10 @@ suri report --scan <id> --format html --out report.html
 suri report --scan <id> --format json --out report.json
 ```
 
-The `--db` flag overrides the default database lookup (most recent `.db` in the current directory):
+The `--db` flag overrides the default database lookup (which searches `~/.suri/scans/` by scan ID):
 
 ```bash
-suri report --scan <id> --db /path/to/scans.db --format html --out report.html
+suri report --scan <id> --db /path/to/scan.db --format html --out report.html
 ```
 
 HTML reports are self-contained single files with inline CSS. No external resources. A Content-Security-Policy meta tag prevents execution of any script content found in evidence.
