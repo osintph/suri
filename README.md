@@ -62,7 +62,7 @@ suri --version
 PowerShell (any recent Windows 10 or 11):
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/osintph/suri/releases/download/v0.1.5/suri_0.1.5_windows_amd64.zip" -OutFile "suri.zip" -UseBasicParsing
+Invoke-WebRequest -Uri "https://github.com/osintph/suri/releases/download/v0.1.7/suri_0.1.7_windows_amd64.zip" -OutFile "suri.zip" -UseBasicParsing
 Expand-Archive -Path suri.zip -DestinationPath . -Force
 .\suri.exe --version
 ```
@@ -364,7 +364,7 @@ Suri is designed for authorized assessments against production systems.
 
 **Suri is for authorized use only.**
 
-Running Suri against systems you do not own or do not have explicit written permission to test is illegal in most jurisdictions and is a violation of the AGPL license under which Suri is distributed. Every scan requires a scope file that declares the engagement. The scope file is a record that you have identified the legal boundary of your assessment. If you are unsure whether you have authorization, do not run Suri.
+Running Suri against systems you do not own or do not have explicit written permission to test is illegal in most jurisdictions and is a violation of the AGPL license under which Suri is distributed. Every scan runs within a defined scope: a scope file for formal engagements, or the implicit scope derived from the target URL for quick scans. That boundary is a record that you have identified the legal limit of your assessment. If you are unsure whether you have authorization, do not run Suri.
 
 ---
 

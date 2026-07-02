@@ -31,7 +31,7 @@ The pin is defined in `internal/wordlists/wordlists.go` (`PinnedCommit` constant
 
 ## Fetched files (cached tier)
 
-When `suri wordlists update` runs, it downloads these SecLists files to `~/.cache/suri/wordlists/`:
+When `suri wordlists update` runs, it downloads these SecLists files to the platform cache directory (`~/.cache/suri/wordlists/` on Linux, `~/Library/Caches/suri/wordlists/` on macOS, `%LocalAppData%\suri\wordlists\` on Windows):
 
 | Local name | SecLists path |
 |------------|--------------|
@@ -45,7 +45,7 @@ When `suri wordlists update` runs, it downloads these SecLists files to `~/.cach
 Checks that use wordlists follow this tier order (highest precedence first):
 
 1. User-supplied via `--wordlist` / `-w` flag on `suri scan`
-2. Cached at `~/.cache/suri/wordlists/` (populated by `suri wordlists update`)
+2. Cached at the platform cache directory (populated by `suri wordlists update`)
 3. Vendored (embedded in binary)
 
 The `wordlist_source` column on each finding records which tier was used, for example `vendored:admin-common.txt`, `cached:seclists/admin-common.txt`, or `user:/path/to/list.txt`.
