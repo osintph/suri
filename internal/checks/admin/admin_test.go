@@ -533,6 +533,71 @@ func TestInterestingPathSkipsWAFBlockPage(t *testing.T) {
 	}
 }
 
+// TestAdminDiscoveredSkipsWAFBlockOn403 verifies that a 403 response whose body
+// is a Cloudflare WAF block page does NOT emit an admin.path.discovered finding.
+// This is the bug that was fixed alongside the existing interesting-path WAF guard.
+func TestAdminDiscoveredSkipsWAFBlockOn403(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/wp-admin" {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte(cloudflareBlockPageAdmin))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	target.WAFTracker = checks.NewWAFTracker()
+	ck := &AdminCheck{WordlistPath: miniWordlist(t, "/wp-admin")}
+
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	for _, f := range findings {
+		if f.CheckID == "admin.path.discovered" && strings.Contains(f.URL, "wp-admin") {
+			t.Errorf("unexpected admin.path.discovered finding for WAF block page: URL=%s title=%q", f.URL, f.Title)
+		}
+	}
+}
+
+// TestAdminDiscovered403WithoutWAFStillEmits verifies that a genuine 403 response
+// without WAF signatures in the body still emits an admin.path.discovered finding.
+func TestAdminDiscovered403WithoutWAFStillEmits(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/wp-admin" {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte("Access Denied"))
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	target := testTarget(srv)
+	target.WAFTracker = checks.NewWAFTracker()
+	ck := &AdminCheck{WordlistPath: miniWordlist(t, "/wp-admin")}
+
+	findings, err := ck.Run(context.Background(), target)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+
+	f := findFinding(findings, "/wp-admin")
+	if f == nil {
+		t.Fatal("expected an admin.path.discovered finding for real 403, got none")
+	}
+	if f.CheckID != "admin.path.discovered" {
+		t.Errorf("CheckID: want admin.path.discovered, got %q", f.CheckID)
+	}
+	if f.Title != "Admin path restricted" {
+		t.Errorf("Title: want %q, got %q", "Admin path restricted", f.Title)
+	}
+}
+
 // TestInterestingPathFiresOnRealMatch is a regression guard confirming that WAF
 // detection does not accidentally suppress legitimate content-verified findings.
 func TestInterestingPathFiresOnRealMatch(t *testing.T) {

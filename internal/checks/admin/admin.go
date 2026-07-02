@@ -346,6 +346,18 @@ func probeCommonPath(ctx context.Context, target *checks.Target, rawURL, wlSourc
 		return nil, status, bodyHash
 	}
 
+	// WAF pre-check: a WAF block page is not a real application response.
+	// Suppress the finding and record the block so WAFTracker can emit
+	// scan.waf.detected when enough blocks accumulate on a host.
+	if waf := webcheck.DetectWAF(body); waf != webcheck.WAFNone {
+		slog.Debug("admin common path probe blocked by WAF, suppressing finding",
+			"url", rawURL, "waf", waf.String())
+		if u, err := url.Parse(rawURL); err == nil && u.Host != "" {
+			target.WAFTracker.Record(u.Host, waf.String())
+		}
+		return nil, status, bodyHash
+	}
+
 	var severity checks.Severity
 	var confidence checks.Confidence
 	var title, description string
