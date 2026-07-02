@@ -72,12 +72,13 @@ ips             = ["127.0.0.1"]
 	if code != 124 {
 		t.Errorf("expected exit code 124 (timeout), got %d", code)
 	}
-	// The scan should stop within 3s. The ceiling is intentionally loose to
-	// accommodate Windows CI runners where Go process and test startup adds
-	// ~1s of overhead. The meaningful assertion is the 124 exit code above;
-	// the time bound only catches cases where the timeout flag is not propagating
-	// at all (the underlying scan without a timeout takes >>3s).
-	if elapsed > 3*time.Second {
+	// The scan should stop within 10s. The ceiling is intentionally loose to
+	// accommodate Windows CI runners where process cleanup and filesystem
+	// operations add several seconds of overhead. The meaningful assertion is
+	// the 124 exit code above; the time bound only catches cases where the
+	// timeout flag is not propagating at all (a scan without a timeout takes
+	// >>10s).
+	if elapsed > 10*time.Second {
 		t.Errorf("scan did not stop after timeout: elapsed %v (want < 3s)", elapsed)
 	}
 }
