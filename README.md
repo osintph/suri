@@ -9,6 +9,7 @@ Web application security scanner for authorized VAPT engagements.
 
 ## Releases
 
+- **v0.1.8** WAF false-positive fix. `admin.path.discovered` now suppresses findings when the 403 response body is a WAF block page. The same guard existed in `admin.path.interesting-exposed` since v0.1.2 but was missing from the common-path probe. Reproducible against Cloudflare-fronted targets.
 - **v0.1.7** Structured output directory. Scans now write to `~/.suri/scans/<engagement>/<scan-id>/` with `scan.db`, `scan.html`, and `metadata.json`. New subcommands `suri list-scans` and `suri delete-scan` for scan management. `--output-dir` flag on `scan`, `report`, `list-scans`, and `delete-scan` overrides the default scans root.
 - **v0.1.6** Auto-generated HTML report after scan completion. `--no-report` skips generation; `--report-format` supports html (default), json, or both. The report subcommand remains for regenerating historical scan reports.
 - **v0.1.5** Quick scan mode. `--scope` is now optional; when omitted, Suri derives an implicit scope from the target URL (hostname and port from scheme). Simpler UX for one-off scans.
@@ -51,8 +52,8 @@ On first run, macOS Gatekeeper will block the unsigned binary. The `xattr` line 
 Download the binary from the [releases page](https://github.com/osintph/suri/releases) and install:
 
 ```bash
-wget https://github.com/osintph/suri/releases/download/v0.1.7/suri_0.1.7_linux_amd64.tar.gz
-tar xzf suri_0.1.7_linux_amd64.tar.gz
+wget https://github.com/osintph/suri/releases/download/v0.1.8/suri_0.1.8_linux_amd64.tar.gz
+tar xzf suri_0.1.8_linux_amd64.tar.gz
 sudo mv suri /usr/local/bin/
 suri --version
 ```
@@ -62,7 +63,7 @@ suri --version
 PowerShell (any recent Windows 10 or 11):
 
 ```powershell
-Invoke-WebRequest -Uri "https://github.com/osintph/suri/releases/download/v0.1.7/suri_0.1.7_windows_amd64.zip" -OutFile "suri.zip" -UseBasicParsing
+Invoke-WebRequest -Uri "https://github.com/osintph/suri/releases/download/v0.1.8/suri_0.1.8_windows_amd64.zip" -OutFile "suri.zip" -UseBasicParsing
 Expand-Archive -Path suri.zip -DestinationPath . -Force
 .\suri.exe --version
 ```

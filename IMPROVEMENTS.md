@@ -244,6 +244,22 @@ and 403 paths) and the interesting-paths check. Per-scan WAFTracker emits
 
 ---
 
+### admin.path.discovered WAF suppression missing (RESOLVED in v0.1.8)
+
+**Observed:** The v0.1.2 fix applied `webcheck.DetectWAF` to
+`probeInterestingPath` (which emits `admin.path.interesting-exposed`) but
+not to `probeCommonPath` (which emits `admin.path.discovered`). Cloudflare
+block pages returned as HTTP 403 on paths like `/wp-admin` or
+`/wp-config.php` triggered false-positive "Admin path restricted" findings.
+Reproducible against any Cloudflare-fronted target where the WAF blocks
+probe traffic from the scanner's origin network.
+
+**Resolved:** v0.1.8 adds the same `webcheck.DetectWAF` pre-check and
+WAFTracker recording to `probeCommonPath`. Two regression tests cover the
+WAF-suppressed branch and the legitimate-403 branch.
+
+---
+
 ## OpenAPI exposure (RESOLVED externally)
 
 ### FastAPI default exposes complete attack surface
